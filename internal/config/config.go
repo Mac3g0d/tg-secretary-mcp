@@ -19,6 +19,7 @@ type Config struct {
 	AllowSend    bool           // TG_ALLOW_SEND
 	Addr         string         // MCP_ADDR
 	AuthToken    string         // MCP_AUTH_TOKEN
+	WebUI        bool           // WEB_UI (default true): serve the browser UI next to /mcp
 }
 
 // Load reads the configuration. Variables already present in the environment
@@ -33,8 +34,14 @@ func Load() (*Config, error) {
 		DBPath:    getenv("TG_DB_PATH", "data/secretary.db"),
 		Addr:      getenv("MCP_ADDR", "127.0.0.1:8080"),
 		AuthToken: os.Getenv("MCP_AUTH_TOKEN"),
+		WebUI:     true,
 	}
 	var err error
+	if v := os.Getenv("WEB_UI"); v != "" {
+		if cfg.WebUI, err = strconv.ParseBool(v); err != nil {
+			return nil, fmt.Errorf("WEB_UI: %q is not a boolean", v)
+		}
+	}
 	if v := os.Getenv("TG_ALLOW_SEND"); v != "" {
 		if cfg.AllowSend, err = strconv.ParseBool(v); err != nil {
 			return nil, fmt.Errorf("TG_ALLOW_SEND: %q is not a boolean", v)

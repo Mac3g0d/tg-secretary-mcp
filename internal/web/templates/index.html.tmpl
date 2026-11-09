@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} — Telegram Secretary</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside>
+  <h1><a href="/">Секретарь</a></h1>
+  <nav aria-label="Чаты">
+    <a class="chat{{if not .ChatID}} active{{end}}" href="/">
+      <span class="chat-title">Все сообщения</span>
+    </a>
+    {{- range .Chats}}
+    <a class="chat{{if .Active}} active{{end}}" href="{{.URL}}">
+      <span class="chat-top">
+        <span class="chat-title">{{.Title}}</span>
+        <span class="chat-count">{{.Count}}</span>
+      </span>
+      <span class="chat-preview">{{.Preview}}</span>
+    </a>
+    {{- end}}
+  </nav>
+</aside>
+<main>
+  <form class="search" method="get" action="/" role="search">
+    <input type="search" name="q" value="{{.Query}}" placeholder="Поиск по сообщениям" autocomplete="off">
+    {{- if .ChatID}}
+    <input type="hidden" name="chat" value="{{.ChatID}}">
+    <label><input type="checkbox" name="everywhere" value="1"{{if .Everywhere}} checked{{end}}> во всех чатах</label>
+    {{- end}}
+    <label><input type="checkbox" name="deleted" value="1"{{if .Deleted}} checked{{end}}> удалённые</label>
+    <button type="submit">Найти</button>
+  </form>
+
+  <h2>{{.Title}}</h2>
+  {{- if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+  {{- with .Top}}<p class="pager"><a href="{{.URL}}">{{.Label}}</a></p>{{end}}
+
+  {{- range .Messages}}
+  <article class="msg{{if .Outgoing}} out{{end}}{{if .Deleted}} deleted{{end}}{{if .Target}} target{{end}}"{{if .Target}} id="target"{{end}}>
+    <header>
+      <span class="msg-sender">{{.Sender}}</span>
+      {{- if .ShowChat}} <span>{{.Chat}}</span>{{end}}
+      <time datetime="{{.DateISO}}">{{.Date}}</time>
+      {{- if .Media}} <span class="tag">{{.Media}}</span>{{end}}
+      {{- if .Edited}} <span class="tag">изменено</span>{{end}}
+      {{- if .Deleted}} <span class="tag">удалено</span>{{end}}
+      {{- if .ContextURL}} <a href="{{.ContextURL}}">в переписке →</a>{{end}}
+    </header>
+    {{- if .Segments}}
+    <p>{{range .Segments}}{{if .Mark}}<mark>{{.Text}}</mark>{{else}}{{.Text}}{{end}}{{end}}</p>
+    {{- end}}
+  </article>
+  {{- else}}
+  <p class="notice">{{.Empty}}</p>
+  {{- end}}
+
+  {{- with .Bottom}}<p class="pager"><a href="{{.URL}}">{{.Label}}</a></p>{{end}}
+</main>
+</body>
+</html>

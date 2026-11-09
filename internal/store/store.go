@@ -138,6 +138,7 @@ type Query struct {
 	IncomingOnly   bool
 	IncludeDeleted bool
 	Limit          int
+	Offset         int  // rows to skip, for paging
 	Ascending      bool // oldest first; default is newest first
 }
 
@@ -280,8 +281,8 @@ func (s *Store) Messages(ctx context.Context, q Query) ([]Message, error) {
 	} else {
 		query += " ORDER BY m.date DESC, m.pk DESC"
 	}
-	query += " LIMIT ?"
-	args = append(args, ClampLimit(q.Limit, 50))
+	query += " LIMIT ? OFFSET ?"
+	args = append(args, ClampLimit(q.Limit, 50), max(q.Offset, 0))
 	return s.queryMessages(ctx, query, args...)
 }
 

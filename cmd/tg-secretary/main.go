@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,12 +24,13 @@ import (
 	"github.com/mac3g0d/tg-secretary-mcp/internal/mcpserver"
 	"github.com/mac3g0d/tg-secretary-mcp/internal/store"
 	"github.com/mac3g0d/tg-secretary-mcp/internal/telegram"
+	"github.com/mac3g0d/tg-secretary-mcp/internal/web"
 )
 
 const usage = `tg-secretary — Telegram secretary bot with an MCP server
 
 Usage:
-  tg-secretary serve   run the bot and the MCP server over HTTP (recommended)
+  tg-secretary serve   run the bot, the MCP server over HTTP and the web UI (recommended)
   tg-secretary bot     run only the bot (message collector)
   tg-secretary stdio   run only the MCP server over stdio, reading the same database
   tg-secretary version
@@ -114,7 +116,7 @@ func run(log *slog.Logger, args []string) error {
 		go func() { errc <- c.Run(ctx) }()
 	}
 	if runHTTP {
-		go func() { errc <- serveHTTP(ctx, log, cfg, mcpserver.New(opts)) }()
+		go func() { errc <- serveHTTP(ctx, log, cfg, db, mcpserver.New(opts)) }()
 	}
 	if runStdio {
 		go func() { errc <- mcpserver.New(opts).Run(ctx, &mcp.StdioTransport{}) }()
@@ -129,10 +131,18 @@ func run(log *slog.Logger, args []string) error {
 	return err
 }
 
-func serveHTTP(ctx context.Context, log *slog.Logger, cfg *config.Config, srv *mcp.Server) error {
+func serveHTTP(ctx context.Context, log *slog.Logger, cfg *config.Config, db *store.Store, srv *mcp.Server) error {
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", bearerAuth(cfg.AuthToken, handler))
+	mux.Handle("/mcp", tokenAuth(cfg.AuthToken, handler))
+	if cfg.WebUI {
+		ui, err := web.NewHandler(db, log)
+		if err != nil {
+			return fmt.Errorf("web UI: %w", err)
+		}
+		mux.Handle("/", tokenAuth(cfg.AuthToken, ui))
+		log.Info("web UI enabled", "url", "http://"+cfg.Addr+"/")
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { fmt.Fprintln(w, "ok") })
 
 	httpSrv := &http.Server{Addr: cfg.Addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -149,15 +159,21 @@ func serveHTTP(ctx context.Context, log *slog.Logger, cfg *config.Config, srv *m
 	return nil
 }
 
-// bearerAuth requires "Authorization: Bearer <token>" when a token is configured.
-func bearerAuth(token string, next http.Handler) http.Handler {
+// tokenAuth protects a handler when a token is configured. Agents send
+// "Authorization: Bearer <token>"; browsers use HTTP Basic auth with the token
+// as the password (any user name).
+func tokenAuth(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return next
 	}
-	want := []byte("Bearer " + token)
+	want := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
-			w.Header().Set("WWW-Authenticate", "Bearer")
+		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok {
+			_, got, _ = r.BasicAuth()
+		}
+		if subtle.ConstantTimeCompare([]byte(got), want) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="tg-secretary", charset="UTF-8"`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -1,0 +1,126 @@
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --panel: #f4f5f7;
+  --border: #dfe1e6;
+  --text: #1c1e21;
+  --muted: #6b7280;
+  --accent: #2481cc;
+  --bubble: #f0f2f5;
+  --bubble-out: #e3f2fd;
+  --mark: #ffe58a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17191c;
+    --panel: #1f2226;
+    --border: #2e3238;
+    --text: #e6e8eb;
+    --muted: #8b939e;
+    --accent: #5aa9e6;
+    --bubble: #24282d;
+    --bubble-out: #1f3347;
+    --mark: #6b5a12;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+aside {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+h1 { margin: 0; padding: 14px 12px; font-size: 17px; border-bottom: 1px solid var(--border); }
+h1 a { color: inherit; }
+nav { overflow-y: auto; flex: 1; }
+.chat {
+  display: block;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+}
+.chat:hover { background: var(--bg); text-decoration: none; }
+.chat.active { background: var(--bubble-out); }
+.chat-top { display: flex; justify-content: space-between; gap: 8px; }
+.chat-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-count { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.chat-preview {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+main { height: 100vh; padding: 0 16px 24px; overflow-y: auto; }
+.search {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 12px 0;
+  background: var(--bg);
+}
+.search input[type="search"] {
+  flex: 1 1 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+.search input[type="search"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.search label { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.search button {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+h2 { margin: 4px 0 12px; font-size: 16px; }
+.notice { color: var(--muted); }
+.pager { text-align: center; }
+
+.msg {
+  width: fit-content;
+  max-width: min(720px, 100%);
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--bubble);
+}
+.msg.out { background: var(--bubble-out); margin-left: auto; }
+.msg.deleted { opacity: 0.6; }
+.msg.target { outline: 2px solid var(--accent); }
+.msg header { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 13px; color: var(--muted); }
+.msg-sender { color: var(--accent); font-weight: 600; }
+.msg p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tag { font-size: 12px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; }
+mark { background: var(--mark); color: inherit; border-radius: 2px; }
+
+@media (max-width: 720px) {
+  html, body { height: auto; }
+  body { display: block; }
+  aside { height: auto; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--border); }
+  main { height: auto; overflow: visible; }
+}
