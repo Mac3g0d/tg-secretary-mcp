@@ -1,0 +1,179 @@
+// Package store persists Telegram chats and messages in SQLite and provides
+// the queries behind the MCP tools.
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo), ships with FTS5
+)
+
+const _schema = `
+CREATE TABLE IF NOT EXISTS chats (
+    id                     INTEGER PRIMARY KEY,
+    type                   TEXT    NOT NULL DEFAULT '',
+    title                  TEXT    NOT NULL DEFAULT '',
+    username               TEXT    NOT NULL DEFAULT '',
+    business_connection_id TEXT    NOT NULL DEFAULT '',
+    updated_at             INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    pk              INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id         INTEGER NOT NULL REFERENCES chats(id),
+    id              INTEGER NOT NULL,
+    date            INTEGER NOT NULL,
+    sender_id       INTEGER NOT NULL DEFAULT 0,
+    sender_name     TEXT    NOT NULL DEFAULT '',
+    sender_username TEXT    NOT NULL DEFAULT '',
+    text            TEXT    NOT NULL DEFAULT '',
+    media_type      TEXT    NOT NULL DEFAULT '',
+    reply_to_id     INTEGER NOT NULL DEFAULT 0,
+    is_outgoing     INTEGER NOT NULL DEFAULT 0,
+    edited_at       INTEGER NOT NULL DEFAULT 0,
+    deleted_at      INTEGER NOT NULL DEFAULT 0,
+    saved_at        INTEGER NOT NULL,
+    UNIQUE (chat_id, id)
+);
+CREATE INDEX IF NOT EXISTS messages_chat_date ON messages (chat_id, date);
+CREATE INDEX IF NOT EXISTS messages_date ON messages (date);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5 (
+    text, sender_name,
+    content='messages', content_rowid='pk',
+    tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts (rowid, text, sender_name) VALUES (new.pk, new.text, new.sender_name);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, text, sender_name)
+    VALUES ('delete', old.pk, old.text, old.sender_name);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text, sender_name ON messages BEGIN
+    INSERT INTO messages_fts (messages_fts, rowid, text, sender_name)
+    VALUES ('delete', old.pk, old.text, old.sender_name);
+    INSERT INTO messages_fts (rowid, text, sender_name) VALUES (new.pk, new.text, new.sender_name);
+END;
+
+CREATE TABLE IF NOT EXISTS business_connections (
+    id      TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS cursors (
+    name       TEXT PRIMARY KEY,
+    last_pk    INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+`
+
+const (
+	// MaxLimit caps how many rows a single query may return.
+	MaxLimit = 500
+
+	_defaultLimit = 50
+)
+
+// Store is a handle to the SQLite database. It is safe for concurrent use.
+type Store struct {
+	db   *sql.DB
+	path string
+}
+
+// Stats summarises the database contents.
+type Stats struct {
+	Chats, Messages int64
+	Oldest, Newest  time.Time
+	SizeBytes       int64
+}
+
+// Open opens (creating if needed) the database at path and applies the schema.
+func Open(path string) (*Store, error) {
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create data dir: %w", err)
+		}
+	}
+
+	pragmas := url.Values{}
+	for _, p := range []string{
+		"journal_mode(WAL)",
+		"busy_timeout(5000)",
+		"foreign_keys(1)",
+		"synchronous(NORMAL)",
+	} {
+		pragmas.Add("_pragma", p)
+	}
+
+	db, err := sql.Open("sqlite", "file:"+path+"?"+pragmas.Encode())
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+	if _, err := db.Exec(_schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply schema: %w", err)
+	}
+
+	// Message history is private: keep the file readable by the owner only.
+	// Best effort; the data directory itself is already 0700.
+	_ = os.Chmod(path, 0o600)
+
+	return &Store{db: db, path: path}, nil
+}
+
+// Close releases the database.
+func (s *Store) Close() error { return s.db.Close() }
+
+// Stats returns database totals.
+func (s *Store) Stats(ctx context.Context) (Stats, error) {
+	var (
+		st             Stats
+		oldest, newest int64
+	)
+	err := s.db.QueryRowContext(ctx, `
+		SELECT (SELECT COUNT(*) FROM chats), COUNT(*), COALESCE(MIN(date), 0), COALESCE(MAX(date), 0)
+		FROM messages`).Scan(&st.Chats, &st.Messages, &oldest, &newest)
+	if err != nil {
+		return st, fmt.Errorf("query stats: %w", err)
+	}
+	st.Oldest, st.Newest = timeOrZero(oldest), timeOrZero(newest)
+	if fi, err := os.Stat(s.path); err == nil {
+		st.SizeBytes = fi.Size()
+	}
+	return st, nil
+}
+
+// ClampLimit applies a default and the MaxLimit ceiling to a requested limit.
+func ClampLimit(limit, def int) int {
+	if limit <= 0 {
+		return def
+	}
+	return min(limit, MaxLimit)
+}
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func timeOrZero(sec int64) time.Time {
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0)
+}
