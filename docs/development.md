@@ -14,6 +14,7 @@
 
 ```
 cmd/tg-secretary       точка входа: команды serve, bot, stdio, version
+internal/app           сборка компонентов и их жизненный цикл
 internal/config        переменные окружения и .env
 internal/telegram      клиент Bot API
 internal/collector     long polling и запись обновлений в базу
