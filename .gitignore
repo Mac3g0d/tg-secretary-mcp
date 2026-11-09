@@ -28,6 +28,13 @@ go.work.sum
 # env file
 .env
 
+# Local data and build output: the database holds private messages
+data/
+*.db
+*.db-wal
+*.db-shm
+/bin/
+
 # Editor/IDE
 # .idea/
 # .vscode/
