@@ -2,8 +2,9 @@ FROM golang:1.26 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+ARG VERSION=dev
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tg-secretary ./cmd/tg-secretary \
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /tg-secretary ./cmd/tg-secretary \
     && mkdir -p /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot

@@ -34,6 +34,7 @@ data/
 *.db-wal
 *.db-shm
 /bin/
+/dist/
 
 # Editor/IDE
 # .idea/
