@@ -3,66 +3,97 @@
 package config
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 )
 
+const (
+	_defaultDBPath = "data/secretary.db"
+	_defaultAddr   = "127.0.0.1:8080"
+	_dotEnvPath    = ".env"
+)
+
 // Config holds all runtime settings.
 type Config struct {
-	BotToken     string         // TELEGRAM_BOT_TOKEN
-	APIURL       string         // TELEGRAM_API_URL (optional, for a self-hosted Bot API server)
-	DBPath       string         // TG_DB_PATH
-	AllowedChats map[int64]bool // TG_ALLOWED_CHATS (comma-separated chat IDs; empty = all)
-	AllowSend    bool           // TG_ALLOW_SEND
-	Addr         string         // MCP_ADDR
-	AuthToken    string         // MCP_AUTH_TOKEN
-	WebUI        bool           // WEB_UI (default true): serve the browser UI next to /mcp
+	// BotToken is TELEGRAM_BOT_TOKEN.
+	BotToken string
+	// APIURL is TELEGRAM_API_URL (optional, for a self-hosted Bot API server).
+	APIURL string
+	// DBPath is TG_DB_PATH.
+	DBPath string
+	// AllowedChats is TG_ALLOWED_CHATS (comma-separated chat IDs; empty = all).
+	AllowedChats map[int64]bool
+	// AllowSend is TG_ALLOW_SEND.
+	AllowSend bool
+	// Addr is MCP_ADDR.
+	Addr string
+	// AuthToken is MCP_AUTH_TOKEN.
+	AuthToken string
+	// WebUI is WEB_UI (default true): serve the browser UI next to /mcp.
+	WebUI bool
 }
 
 // Load reads the configuration. Variables already present in the environment
 // take precedence over the .env file in the working directory.
 func Load() (*Config, error) {
-	if err := loadDotEnv(".env"); err != nil {
+	if err := loadDotEnv(_dotEnvPath); err != nil {
 		return nil, err
 	}
-	cfg := &Config{
-		BotToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
-		APIURL:    os.Getenv("TELEGRAM_API_URL"),
-		DBPath:    getenv("TG_DB_PATH", "data/secretary.db"),
-		Addr:      getenv("MCP_ADDR", "127.0.0.1:8080"),
-		AuthToken: os.Getenv("MCP_AUTH_TOKEN"),
-		WebUI:     true,
+
+	webUI, err := envBool("WEB_UI", true)
+	if err != nil {
+		return nil, err
 	}
-	var err error
-	if v := os.Getenv("WEB_UI"); v != "" {
-		if cfg.WebUI, err = strconv.ParseBool(v); err != nil {
-			return nil, fmt.Errorf("WEB_UI: %q is not a boolean", v)
-		}
+	allowSend, err := envBool("TG_ALLOW_SEND", false)
+	if err != nil {
+		return nil, err
 	}
-	if v := os.Getenv("TG_ALLOW_SEND"); v != "" {
-		if cfg.AllowSend, err = strconv.ParseBool(v); err != nil {
-			return nil, fmt.Errorf("TG_ALLOW_SEND: %q is not a boolean", v)
-		}
-	}
-	if cfg.AllowedChats, err = parseIDs(os.Getenv("TG_ALLOWED_CHATS")); err != nil {
+	allowedChats, err := parseIDs(os.Getenv("TG_ALLOWED_CHATS"))
+	if err != nil {
 		return nil, fmt.Errorf("TG_ALLOWED_CHATS: %w", err)
 	}
-	return cfg, nil
+
+	return &Config{
+		BotToken:     os.Getenv("TELEGRAM_BOT_TOKEN"),
+		APIURL:       os.Getenv("TELEGRAM_API_URL"),
+		DBPath:       envString("TG_DB_PATH", _defaultDBPath),
+		AllowedChats: allowedChats,
+		AllowSend:    allowSend,
+		Addr:         envString("MCP_ADDR", _defaultAddr),
+		AuthToken:    os.Getenv("MCP_AUTH_TOKEN"),
+		WebUI:        webUI,
+	}, nil
 }
 
-func getenv(key, def string) string {
+// envString returns the variable's value, or def when it is unset or empty.
+func envString(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return def
 }
 
+// envBool parses the variable as a boolean, or returns def when it is unset
+// or empty.
+func envBool(key string, def bool) (bool, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return def, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("%s: %q is not a boolean", key, v)
+	}
+	return b, nil
+}
+
+// parseIDs parses a comma-separated list of chat IDs into a set.
 func parseIDs(s string) (map[int64]bool, error) {
-	ids := map[int64]bool{}
-	for _, part := range strings.Split(s, ",") {
+	parts := strings.Split(s, ",")
+	ids := make(map[int64]bool, len(parts))
+	for _, part := range parts {
 		if part = strings.TrimSpace(part); part == "" {
 			continue
 		}
@@ -73,35 +104,4 @@ func parseIDs(s string) (map[int64]bool, error) {
 		ids[id] = true
 	}
 	return ids, nil
-}
-
-// loadDotEnv sets variables from KEY=VALUE lines; a missing file is fine.
-func loadDotEnv(path string) error {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(strings.TrimPrefix(line, "export "), "=")
-		if !ok {
-			continue
-		}
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
-		if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-			value = value[1 : len(value)-1]
-		}
-		if _, set := os.LookupEnv(key); !set {
-			os.Setenv(key, value)
-		}
-	}
-	return sc.Err()
 }

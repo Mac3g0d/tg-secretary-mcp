@@ -41,11 +41,13 @@ for target in "${targets[@]}"; do
     -o "$stage/$binary" ./cmd/tg-secretary
   cp README.md LICENSE .env.example "$stage/"
 
+  # Archives are flat: the binary and the docs sit at the archive root.
+  files=("$binary" README.md LICENSE .env.example)
   if [[ "$goos" == "windows" ]]; then
-    (cd "$work" && zip -q -r "$name.zip" "$name")
+    (cd "$stage" && zip -q "$work/$name.zip" "${files[@]}")
     mv "$work/$name.zip" "$out/"
   else
-    tar -C "$work" -czf "$out/$name.tar.gz" "$name"
+    tar -C "$stage" -czf "$out/$name.tar.gz" "${files[@]}"
   fi
 done
 

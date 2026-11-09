@@ -193,8 +193,6 @@ Orange Pi PC Plus построен на Allwinner H3 (4 ядра Cortex-A7, 32-�
    sudo install -m 0755 tg-secretary /usr/local/bin/tg-secretary
    ```
 
-   Если архив распаковался в подкаталог, укажите путь к бинарнику в нём.
-
    ```bash
    tg-secretary version
    ```

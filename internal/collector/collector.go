@@ -5,7 +5,10 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -20,159 +23,141 @@ const (
 	MetaLastUpdateAt = "last_update_at"
 )
 
-// Collector archives Bot API updates into the store.
-type Collector struct {
-	API   *telegram.Client
+const (
+	_defaultPollTimeout = 50 * time.Second
+	_minBackoff         = time.Second
+	_maxBackoff         = time.Minute
+)
+
+// Config configures a Collector.
+type Config struct {
+	// API is the Bot API client. It is required to Run.
+	API *telegram.Client
+	// Store receives the archived messages. It is required.
 	Store *store.Store
-	Log   *slog.Logger
+	// Log receives progress and error messages. It defaults to a logger
+	// that discards everything.
+	Log *slog.Logger
 	// AllowedChats, when non-empty, restricts archiving to these chat IDs.
 	AllowedChats map[int64]bool
-	// PollTimeout is the long-polling timeout (default 50s).
+	// PollTimeout is the long-polling timeout. It defaults to 50 seconds.
 	PollTimeout time.Duration
+}
 
+// Collector archives Bot API updates into the store.
+type Collector struct {
+	api          *telegram.Client
+	store        *store.Store
+	log          *slog.Logger
+	allowedChats map[int64]bool
+	pollTimeout  time.Duration
+
+	// botID is the bot's own user ID, known once Run has started.
 	botID int64
+}
+
+// New returns a Collector for cfg.
+func New(cfg Config) *Collector {
+	c := &Collector{
+		api:          cfg.API,
+		store:        cfg.Store,
+		log:          cfg.Log,
+		allowedChats: cfg.AllowedChats,
+		pollTimeout:  cfg.PollTimeout,
+	}
+	if c.log == nil {
+		c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	if c.pollTimeout == 0 {
+		c.pollTimeout = _defaultPollTimeout
+	}
+	return c
 }
 
 // Run polls until ctx is cancelled. It returns an error only when the bot
 // cannot start at all (for example, an invalid token).
 func (c *Collector) Run(ctx context.Context) error {
-	if c.PollTimeout == 0 {
-		c.PollTimeout = 50 * time.Second
-	}
-	me, err := c.API.GetMe(ctx)
+	me, err := c.api.GetMe(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("get bot identity: %w", err)
 	}
 	c.botID = me.ID
-	if err := c.Store.SetMeta(ctx, MetaBotUsername, me.Username); err != nil {
-		return err
+	if err := c.store.SetMeta(ctx, MetaBotUsername, me.Username); err != nil {
+		return fmt.Errorf("save bot username: %w", err)
 	}
-	c.Log.Info("bot started", "username", me.Username)
+	c.log.Info("bot started", "username", me.Username)
 
-	saved, err := c.Store.Meta(ctx, MetaOffset)
+	saved, err := c.store.Meta(ctx, MetaOffset)
 	if err != nil {
-		return err
+		return fmt.Errorf("load update offset: %w", err)
 	}
 	offset, _ := strconv.ParseInt(saved, 10, 64)
 
-	backoff := time.Second
+	backoff := _minBackoff
 	for ctx.Err() == nil {
-		updates, err := c.API.GetUpdates(ctx, offset, c.PollTimeout)
-		if err != nil {
+		updates, pollErr := c.api.GetUpdates(ctx, offset, c.pollTimeout)
+		if pollErr != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			wait := backoff
-			var apiErr *telegram.APIError
-			if errors.As(err, &apiErr) {
-				if apiErr.Code == 401 {
-					return err
-				}
-				// 409 means another process polls with the same token.
-				wait = max(wait, apiErr.RetryAfter)
+			wait, fatal := c.retryDelay(pollErr, backoff)
+			if fatal != nil {
+				return fatal
 			}
-			c.Log.Warn("getUpdates failed, retrying", "error", err, "in", wait)
-			select {
-			case <-ctx.Done():
-			case <-time.After(wait):
-			}
-			backoff = min(backoff*2, time.Minute)
+			c.log.Warn("getUpdates failed, retrying", "error", pollErr, "in", wait)
+			sleep(ctx, wait)
+			backoff = min(backoff*2, _maxBackoff)
 			continue
 		}
-		backoff = time.Second
-		if len(updates) == 0 {
-			continue
-		}
-		for _, u := range updates {
-			if err := c.Handle(ctx, u); err != nil {
-				c.Log.Error("failed to store update", "update_id", u.UpdateID, "error", err)
-			}
-			offset = u.UpdateID + 1
-		}
-		// The offset is persisted so a restart neither replays nor skips updates.
-		if err := c.Store.SetMeta(ctx, MetaOffset, strconv.FormatInt(offset, 10)); err != nil {
-			c.Log.Error("failed to persist offset", "error", err)
-		}
-		_ = c.Store.SetMeta(ctx, MetaLastUpdateAt, strconv.FormatInt(time.Now().Unix(), 10))
-	}
-	return nil
-}
+		backoff = _minBackoff
 
-// Handle stores a single update.
-func (c *Collector) Handle(ctx context.Context, u telegram.Update) error {
-	switch {
-	case u.BusinessConnection != nil:
-		bc := u.BusinessConnection
-		return c.Store.SaveBusinessConnection(ctx, bc.ID, bc.User.ID, bc.IsEnabled)
-	case u.DeletedBusinessMessages != nil:
-		d := u.DeletedBusinessMessages
-		_, err := c.Store.MarkDeleted(ctx, d.Chat.ID, d.MessageIDs)
-		return err
-	}
-	for _, m := range []*telegram.Message{
-		u.Message, u.EditedMessage, u.ChannelPost, u.EditedChannelPost,
-		u.BusinessMessage, u.EditedBusinessMessage,
-	} {
-		if m != nil {
-			return c.SaveMessage(ctx, m)
+		if len(updates) > 0 {
+			offset = c.handleBatch(ctx, updates)
 		}
 	}
 	return nil
 }
 
-// SaveMessage archives one message together with its chat. Service messages
-// (joins, pins, …) that carry neither text nor media are skipped.
-func (c *Collector) SaveMessage(ctx context.Context, m *telegram.Message) error {
-	if len(c.AllowedChats) > 0 && !c.AllowedChats[m.Chat.ID] {
-		return nil
+// retryDelay decides how long to wait after a failed poll. It returns the
+// error itself when polling can never succeed, such as with a revoked token.
+func (c *Collector) retryDelay(err error, backoff time.Duration) (time.Duration, error) {
+	var apiErr *telegram.APIError
+	if !errors.As(err, &apiErr) {
+		return backoff, nil
 	}
-	text, media := m.Content(), m.MediaType()
-	if text == "" && media == "" {
-		return nil
+	if apiErr.Code == http.StatusUnauthorized {
+		return 0, fmt.Errorf("poll updates: %w", err)
 	}
-	if err := c.Store.UpsertChat(ctx, store.Chat{
-		ID:                   m.Chat.ID,
-		Type:                 m.Chat.Type,
-		Title:                m.Chat.DisplayName(),
-		Username:             m.Chat.Username,
-		BusinessConnectionID: m.BusinessConnectionID,
-	}); err != nil {
-		return err
-	}
+	// 409 means another process polls with the same token.
+	return max(backoff, apiErr.RetryAfter), nil
+}
 
-	rec := store.Message{
-		ChatID:    m.Chat.ID,
-		ID:        m.MessageID,
-		Date:      time.Unix(m.Date, 0),
-		Text:      text,
-		MediaType: media,
-	}
-	if m.EditDate != 0 {
-		rec.EditedAt = time.Unix(m.EditDate, 0)
-	}
-	if m.ReplyToMessage != nil {
-		rec.ReplyToID = m.ReplyToMessage.MessageID
-	}
-	switch {
-	case m.SenderChat != nil: // channel posts and anonymous group admins
-		rec.SenderID = m.SenderChat.ID
-		rec.SenderName = m.SenderChat.DisplayName()
-		rec.SenderUsername = m.SenderChat.Username
-	case m.From != nil:
-		rec.SenderID = m.From.ID
-		rec.SenderName = m.From.DisplayName()
-		rec.SenderUsername = m.From.Username
-	}
-
-	// "Outgoing" means written by the bot itself or, in a business chat, by
-	// the account owner the secretary works for.
-	rec.Outgoing = rec.SenderID == c.botID && c.botID != 0
-	if m.BusinessConnectionID != "" && m.From != nil {
-		owner, err := c.Store.BusinessOwner(ctx, m.BusinessConnectionID)
-		if err != nil {
-			return err
+// handleBatch stores a batch of updates and returns the next offset.
+func (c *Collector) handleBatch(ctx context.Context, updates []telegram.Update) int64 {
+	var offset int64
+	for _, u := range updates {
+		if err := c.handle(ctx, u); err != nil {
+			c.log.Error("store update", "update_id", u.UpdateID, "error", err)
 		}
-		rec.Outgoing = owner != 0 && owner == m.From.ID
+		offset = u.UpdateID + 1
 	}
-	return c.Store.SaveMessage(ctx, rec)
+	// The offset is persisted so a restart neither replays nor skips updates.
+	if err := c.store.SetMeta(ctx, MetaOffset, strconv.FormatInt(offset, 10)); err != nil {
+		c.log.Error("persist offset", "error", err)
+	}
+	now := strconv.FormatInt(time.Now().Unix(), 10)
+	if err := c.store.SetMeta(ctx, MetaLastUpdateAt, now); err != nil {
+		c.log.Warn("persist last update time", "error", err)
+	}
+	return offset
+}
+
+// sleep waits for d or until ctx is done.
+func sleep(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
 }

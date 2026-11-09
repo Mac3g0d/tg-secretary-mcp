@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +22,7 @@ import (
 	"github.com/mac3g0d/tg-secretary-mcp/internal/telegram"
 )
 
-const token = "123:SECRET"
+const _token = "123:SECRET"
 
 // fakeAPI imitates the Bot API: it hands out queued updates once and records
 // sendMessage calls.
@@ -33,8 +34,10 @@ type fakeAPI struct {
 	once    sync.Once
 }
 
+var _ http.Handler = (*fakeAPI)(nil)
+
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	method := strings.TrimPrefix(r.URL.Path, "/bot"+token+"/")
+	method := strings.TrimPrefix(r.URL.Path, "/bot"+_token+"/")
 	body, _ := io.ReadAll(r.Body)
 	var params map[string]any
 	_ = json.Unmarshal(body, &params)
@@ -61,7 +64,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var updates = []string{
+var _updates = []string{
 	`{"update_id":1,"message":{"message_id":10,"date":1767225600,"text":"Привет! Созвон завтра в 10:00",
 		"chat":{"id":-100,"type":"supergroup","title":"Команда Альфа","username":"alpha_team"},
 		"from":{"id":1,"first_name":"Иван","last_name":"Петров","username":"ivan"}}}`,
@@ -102,7 +105,7 @@ func setup(t *testing.T) *env {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	api := &fakeAPI{updates: append([]string(nil), updates...), drained: make(chan struct{})}
+	api := &fakeAPI{updates: slices.Clone(_updates), drained: make(chan struct{})}
 	ts := httptest.NewServer(api)
 	t.Cleanup(ts.Close)
 
@@ -112,22 +115,31 @@ func setup(t *testing.T) *env {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	tg := telegram.New(token, ts.URL)
-	c := &collector.Collector{
-		API: tg, Store: db, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		AllowedChats: map[int64]bool{-100: true, 77: true}, PollTimeout: time.Second,
-	}
+	tg := telegram.New(_token, ts.URL)
+	c := collector.New(collector.Config{
+		API:          tg,
+		Store:        db,
+		Log:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+		AllowedChats: map[int64]bool{-100: true, 77: true},
+		PollTimeout:  time.Second,
+	})
 	done := make(chan error, 1)
 	go func() { done <- c.Run(ctx) }()
+	// Stop the collector and wait for it before the database is closed.
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
 	select {
 	case <-api.drained:
 	case err := <-done:
+		done <- err
 		t.Fatalf("collector stopped early: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("collector did not drain updates")
 	}
 
-	srv := mcpserver.New(mcpserver.Options{Store: db, Sender: tg})
+	srv := mcpserver.New(mcpserver.Options{Store: db, Sender: tg, Version: "test"})
 	st, ct := mcp.NewInMemoryTransports()
 	if _, err := srv.Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
@@ -157,146 +169,266 @@ func (e *env) call(name string, args map[string]any, out any) *mcp.CallToolResul
 	return res
 }
 
+// sentRequest returns the i-th sendMessage request the fake API received.
+func (e *env) sentRequest(i int) map[string]any {
+	e.t.Helper()
+	e.api.mu.Lock()
+	defer e.api.mu.Unlock()
+	if i >= len(e.api.sent) {
+		e.t.Fatalf("only %d sendMessage requests, want index %d", len(e.api.sent), i)
+	}
+	return e.api.sent[i]
+}
+
 func ids(out mcpserver.MessagesOutput) []int64 {
-	var r []int64
+	r := make([]int64, 0, len(out.Messages))
 	for _, m := range out.Messages {
 		r = append(r, m.MessageID)
 	}
 	return r
 }
 
-func equal(a []int64, b ...int64) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func TestListChats(t *testing.T) {
-	e := setup(t)
-	var out struct {
+	type chats struct {
 		Chats []struct {
 			ID           int64  `json:"id"`
 			Title        string `json:"title"`
 			MessageCount int64  `json:"message_count"`
 		} `json:"chats"`
 	}
-	e.call("list_chats", nil, &out)
-	// Chat 555 is outside the allow list; the service message is not counted.
-	if len(out.Chats) != 2 || out.Chats[0].ID != 77 || out.Chats[1].ID != -100 {
-		t.Fatalf("unexpected chats: %+v", out.Chats)
+	e := setup(t)
+
+	tests := []struct {
+		name      string
+		give      map[string]any
+		wantIDs   []int64
+		wantCount []int64 // message counts, parallel to wantIDs
+	}{
+		// Chat 555 is outside the allow list; the service message is not counted.
+		{name: "all, most recent first", wantIDs: []int64{77, -100}, wantCount: []int64{2, 3}},
+		{
+			name:      "case-insensitive filter",
+			give:      map[string]any{"query": "АЛЬФА"},
+			wantIDs:   []int64{-100},
+			wantCount: []int64{3},
+		},
+		{
+			name:      "type filter",
+			give:      map[string]any{"type": "private"},
+			wantIDs:   []int64{77},
+			wantCount: []int64{2},
+		},
 	}
-	if out.Chats[0].Title != "Клиент Сидоров" || out.Chats[0].MessageCount != 2 || out.Chats[1].MessageCount != 3 {
-		t.Fatalf("unexpected chat details: %+v", out.Chats)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out chats
+			e.call("list_chats", tt.give, &out)
+			var gotIDs, gotCount []int64
+			for _, c := range out.Chats {
+				gotIDs = append(gotIDs, c.ID)
+				gotCount = append(gotCount, c.MessageCount)
+			}
+			if !slices.Equal(gotIDs, tt.wantIDs) || !slices.Equal(gotCount, tt.wantCount) {
+				t.Fatalf("got ids %v counts %v, want ids %v counts %v",
+					gotIDs, gotCount, tt.wantIDs, tt.wantCount)
+			}
+		})
 	}
-	e.call("list_chats", map[string]any{"query": "АЛЬФА"}, &out)
-	if len(out.Chats) != 1 || out.Chats[0].ID != -100 {
-		t.Fatalf("case-insensitive filter failed: %+v", out.Chats)
-	}
+
+	t.Run("titles", func(t *testing.T) {
+		var out chats
+		e.call("list_chats", nil, &out)
+		if out.Chats[0].Title != "Клиент Сидоров" || out.Chats[1].Title != "Команда Альфа" {
+			t.Fatalf("unexpected titles: %+v", out.Chats)
+		}
+	})
 }
 
 func TestGetMessages(t *testing.T) {
 	e := setup(t)
-	var out mcpserver.MessagesOutput
-	e.call("get_messages", map[string]any{"chat": "альфа"}, &out)
-	if !equal(ids(out), 10, 11, 12) {
-		t.Fatalf("want chronological 10,11,12, got %v", ids(out))
+
+	tests := []struct {
+		name     string
+		give     map[string]any
+		want     []int64
+		wantMore bool
+	}{
+		{
+			name: "chronological by title",
+			give: map[string]any{"chat": "альфа"},
+			want: []int64{10, 11, 12},
+		},
+		{
+			name:     "limit keeps the latest",
+			give:     map[string]any{"chat": "@alpha_team", "limit": 2},
+			want:     []int64{11, 12},
+			wantMore: true,
+		},
+		{
+			name: "sender filter",
+			give: map[string]any{"chat": "-100", "sender": "@IVAN"},
+			want: []int64{10, 12},
+		},
+		{
+			name: "deleted hidden by default",
+			give: map[string]any{"chat": "77"},
+			want: []int64{20, 21},
+		},
+		{
+			name: "include deleted",
+			give: map[string]any{"chat": "77", "include_deleted": true},
+			want: []int64{20, 21, 22},
+		},
 	}
-	first := out.Messages[0]
-	if !first.Edited || !strings.Contains(first.Text, "11:00") || first.Sender != "Иван Петров" {
-		t.Fatalf("edit was not applied: %+v", first)
-	}
-	if out.Messages[1].ReplyToID != 10 || out.Messages[2].Media != "document" || out.Messages[2].Text != "смета по проекту" {
-		t.Fatalf("reply/media not stored: %+v", out.Messages)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out mcpserver.MessagesOutput
+			e.call("get_messages", tt.give, &out)
+			if got := ids(out); !slices.Equal(got, tt.want) || out.HasMore != tt.wantMore {
+				t.Fatalf("got %v has_more=%v, want %v has_more=%v",
+					got, out.HasMore, tt.want, tt.wantMore)
+			}
+		})
 	}
 
-	e.call("get_messages", map[string]any{"chat": "@alpha_team", "limit": 2}, &out)
-	if !equal(ids(out), 11, 12) || !out.HasMore {
-		t.Fatalf("limit should keep the latest messages: %v has_more=%v", ids(out), out.HasMore)
-	}
-	e.call("get_messages", map[string]any{"chat": "-100", "sender": "@IVAN"}, &out)
-	if !equal(ids(out), 10, 12) {
-		t.Fatalf("sender filter: %v", ids(out))
-	}
+	t.Run("stored fields", func(t *testing.T) {
+		var out mcpserver.MessagesOutput
+		e.call("get_messages", map[string]any{"chat": "альфа"}, &out)
+		first := out.Messages[0]
+		if !first.Edited || !strings.Contains(first.Text, "11:00") || first.Sender != "Иван Петров" {
+			t.Fatalf("edit was not applied: %+v", first)
+		}
+		if out.Messages[1].ReplyToID != 10 || out.Messages[2].Media != "document" ||
+			out.Messages[2].Text != "смета по проекту" {
+			t.Fatalf("reply/media not stored: %+v", out.Messages)
+		}
+	})
 
-	// Business chat: the owner's reply is outgoing, the deleted message is hidden by default.
-	e.call("get_messages", map[string]any{"chat": "77"}, &out)
-	if !equal(ids(out), 20, 21) || out.Messages[0].Outgoing || !out.Messages[1].Outgoing {
-		t.Fatalf("business chat: %+v", out.Messages)
-	}
-	e.call("get_messages", map[string]any{"chat": "77", "include_deleted": true}, &out)
-	if !equal(ids(out), 20, 21, 22) || !out.Messages[2].Deleted {
-		t.Fatalf("include_deleted: %+v", out.Messages)
-	}
+	t.Run("business chat flags", func(t *testing.T) {
+		// The owner's reply is outgoing; the deleted message carries its flag.
+		var out mcpserver.MessagesOutput
+		e.call("get_messages", map[string]any{"chat": "77", "include_deleted": true}, &out)
+		if out.Messages[0].Outgoing || !out.Messages[1].Outgoing || !out.Messages[2].Deleted {
+			t.Fatalf("business chat: %+v", out.Messages)
+		}
+	})
 
-	if res := e.call("get_messages", map[string]any{"chat": "нет такого"}, nil); !res.IsError {
-		t.Fatal("unknown chat should be a tool error")
+	errTests := []struct {
+		name string
+		give map[string]any
+	}{
+		{name: "unknown chat", give: map[string]any{"chat": "нет такого"}},
+		{name: "bad since", give: map[string]any{"chat": "-100", "since": "yesterday-ish"}},
+		{name: "bad until", give: map[string]any{"chat": "-100", "until": "later"}},
 	}
-	if res := e.call("get_messages", map[string]any{"chat": "-100", "since": "yesterday-ish"}, nil); !res.IsError {
-		t.Fatal("bad time should be a tool error")
+	for _, tt := range errTests {
+		t.Run(tt.name, func(t *testing.T) {
+			if res := e.call("get_messages", tt.give, nil); !res.IsError {
+				t.Fatal("want a tool error")
+			}
+		})
 	}
 }
 
 func TestSearchMessages(t *testing.T) {
 	e := setup(t)
-	var out mcpserver.MessagesOutput
-	// Case-insensitive Cyrillic prefix search; the pre-edit text must be gone from the index.
-	e.call("search_messages", map[string]any{"query": "СОЗВОН завт"}, &out)
-	if !equal(ids(out), 10) {
-		t.Fatalf("search: %v", ids(out))
+
+	tests := []struct {
+		name string
+		give map[string]any
+		want []int64
+	}{
+		{
+			name: "case-insensitive Cyrillic prefix",
+			give: map[string]any{"query": "СОЗВОН завт"},
+			want: []int64{10},
+		},
+		{
+			name: "pre-edit text is gone from the index",
+			give: map[string]any{"query": "10:00"},
+		},
+		{
+			name: "prefix across messages, newest first",
+			give: map[string]any{"query": "опла"},
+			want: []int64{21, 20},
+		},
+		{
+			name: "sender name filter",
+			give: map[string]any{"query": "опла", "sender": "сидоров"},
+			want: []int64{20},
+		},
+		{
+			name: "chat filter",
+			give: map[string]any{"query": "опла", "chat": "альфа"},
+		},
+		{
+			name: "until filter",
+			give: map[string]any{"query": "созвон", "until": "2020-01-01"},
+		},
+		{
+			name: "FTS operators are plain words",
+			give: map[string]any{"query": `"смета AND (NOT`},
+		},
 	}
-	e.call("search_messages", map[string]any{"query": "10:00"}, &out)
-	if out.Count != 0 {
-		t.Fatalf("stale text is still searchable: %+v", out.Messages)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out mcpserver.MessagesOutput
+			e.call("search_messages", tt.give, &out)
+			if got := ids(out); !slices.Equal(got, tt.want) || out.Count != len(tt.want) {
+				t.Fatalf("got %v (count %d), want %v", got, out.Count, tt.want)
+			}
+		})
 	}
-	e.call("search_messages", map[string]any{"query": "опла"}, &out)
-	if !equal(ids(out), 21, 20) {
-		t.Fatalf("prefix search across messages, newest first: %v", ids(out))
-	}
-	e.call("search_messages", map[string]any{"query": "опла", "sender": "сидоров"}, &out)
-	if !equal(ids(out), 20) {
-		t.Fatalf("sender name filter: %v", ids(out))
-	}
-	e.call("search_messages", map[string]any{"query": "опла", "chat": "альфа"}, &out)
-	if out.Count != 0 {
-		t.Fatalf("chat filter: %v", ids(out))
-	}
-	e.call("search_messages", map[string]any{"query": "созвон", "until": "2020-01-01"}, &out)
-	if out.Count != 0 {
-		t.Fatalf("until filter: %v", ids(out))
-	}
-	// FTS syntax in user input must not break the query.
-	e.call("search_messages", map[string]any{"query": `"смета AND (NOT`}, &out)
-	if out.Count != 0 {
-		t.Fatalf("operators are plain words: %v", ids(out))
-	}
+
+	t.Run("empty query is an error", func(t *testing.T) {
+		if res := e.call("search_messages", map[string]any{"query": "  "}, nil); !res.IsError {
+			t.Fatal("want a tool error")
+		}
+	})
 }
 
 func TestMessageContext(t *testing.T) {
 	e := setup(t)
-	var out mcpserver.MessagesOutput
-	e.call("get_message_context", map[string]any{"chat": "-100", "message_id": 11, "before": 1, "after": 0}, &out)
-	if !equal(ids(out), 10, 11) {
-		t.Fatalf("context: %v", ids(out))
+
+	tests := []struct {
+		name string
+		give map[string]any
+		want []int64
+	}{
+		{
+			name: "explicit window",
+			give: map[string]any{"chat": "-100", "message_id": 11, "before": 1, "after": 0},
+			want: []int64{10, 11},
+		},
+		{
+			name: "default window",
+			give: map[string]any{"chat": "-100", "message_id": 11},
+			want: []int64{10, 11, 12},
+		},
 	}
-	e.call("get_message_context", map[string]any{"chat": "-100", "message_id": 11}, &out)
-	if !equal(ids(out), 10, 11, 12) {
-		t.Fatalf("default context: %v", ids(out))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out mcpserver.MessagesOutput
+			e.call("get_message_context", tt.give, &out)
+			if got := ids(out); !slices.Equal(got, tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
 	}
-	if res := e.call("get_message_context", map[string]any{"chat": "-100", "message_id": 999}, nil); !res.IsError {
-		t.Fatal("missing message should be a tool error")
-	}
+
+	t.Run("missing message is an error", func(t *testing.T) {
+		give := map[string]any{"chat": "-100", "message_id": 999}
+		if res := e.call("get_message_context", give, nil); !res.IsError {
+			t.Fatal("want a tool error")
+		}
+	})
 }
 
 func TestNewMessagesFeed(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
-	// Make the fixtures "recent" for the 24h first-call window.
+
+	// The fixtures are older than the 24h window of a consumer's first call.
 	var out mcpserver.MessagesOutput
 	e.call("get_new_messages", map[string]any{"consumer": "old"}, &out)
 	if out.Count != 0 {
@@ -305,7 +437,14 @@ func TestNewMessagesFeed(t *testing.T) {
 
 	save := func(id int64, text string, outgoing bool) {
 		t.Helper()
-		if err := e.store.SaveMessage(ctx, store.Message{ChatID: -100, ID: id, Date: time.Now(), Text: text, Outgoing: outgoing}); err != nil {
+		err := e.store.SaveMessage(ctx, store.Message{
+			ChatID:   -100,
+			ID:       id,
+			Date:     time.Now(),
+			Text:     text,
+			Outgoing: outgoing,
+		})
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -313,31 +452,43 @@ func TestNewMessagesFeed(t *testing.T) {
 	save(31, "мой ответ", true)
 	save(32, "новое 2", false)
 
-	e.call("get_new_messages", map[string]any{"peek": true}, &out)
-	if !equal(ids(out), 30, 32) {
-		t.Fatalf("peek: %v", ids(out))
+	// The steps depend on each other: each one moves the consumer's position.
+	steps := []struct {
+		name     string
+		give     map[string]any
+		want     []int64
+		wantMore bool
+		before   func()
+	}{
+		{name: "peek does not advance", give: map[string]any{"peek": true}, want: []int64{30, 32}},
+		{
+			name:     "first page",
+			give:     map[string]any{"limit": 1},
+			want:     []int64{30},
+			wantMore: true,
+		},
+		{name: "second page", want: []int64{32}},
+		{name: "drained"},
+		{
+			name:   "new message after drain",
+			want:   []int64{33},
+			before: func() { save(33, "новое 3", false) },
+		},
+		{
+			name: "independent consumer sees everything stored since",
+			give: map[string]any{"consumer": "old", "include_outgoing": true},
+			want: []int64{30, 31, 32, 33},
+		},
 	}
-	e.call("get_new_messages", map[string]any{"limit": 1}, &out)
-	if !equal(ids(out), 30) || !out.HasMore {
-		t.Fatalf("first page: %v has_more=%v", ids(out), out.HasMore)
-	}
-	e.call("get_new_messages", nil, &out)
-	if !equal(ids(out), 32) || out.HasMore {
-		t.Fatalf("second page: %v", ids(out))
-	}
-	e.call("get_new_messages", nil, &out)
-	if out.Count != 0 {
-		t.Fatalf("feed should be drained: %v", ids(out))
-	}
-	save(33, "новое 3", false)
-	e.call("get_new_messages", nil, &out)
-	if !equal(ids(out), 33) {
-		t.Fatalf("new message after drain: %v", ids(out))
-	}
-	// The "old" consumer has its own position and sees everything stored since.
-	e.call("get_new_messages", map[string]any{"consumer": "old", "include_outgoing": true}, &out)
-	if !equal(ids(out), 30, 31, 32, 33) {
-		t.Fatalf("independent consumer: %v", ids(out))
+	for _, step := range steps {
+		if step.before != nil {
+			step.before()
+		}
+		e.call("get_new_messages", step.give, &out)
+		if got := ids(out); !slices.Equal(got, step.want) || out.HasMore != step.wantMore {
+			t.Fatalf("%s: got %v has_more=%v, want %v has_more=%v",
+				step.name, got, out.HasMore, step.want, step.wantMore)
+		}
 	}
 }
 
@@ -346,31 +497,32 @@ func TestSendMessageAndStatus(t *testing.T) {
 	var sent struct {
 		Sent mcpserver.Message `json:"sent"`
 	}
-	e.call("send_message", map[string]any{"chat": "альфа", "text": "принято", "reply_to_message_id": 12}, &sent)
+
+	e.call("send_message", map[string]any{
+		"chat":                "альфа",
+		"text":                "принято",
+		"reply_to_message_id": 12,
+	}, &sent)
 	if sent.Sent.MessageID != 500 || !sent.Sent.Outgoing {
 		t.Fatalf("sent: %+v", sent.Sent)
 	}
-	e.api.mu.Lock()
-	req := e.api.sent[0]
-	e.api.mu.Unlock()
-	if req["chat_id"].(float64) != -100 || req["text"] != "принято" ||
-		req["reply_parameters"].(map[string]any)["message_id"].(float64) != 12 {
+	req := e.sentRequest(0)
+	reply, _ := req["reply_parameters"].(map[string]any)
+	if req["chat_id"] != float64(-100) || req["text"] != "принято" ||
+		reply["message_id"] != float64(12) {
 		t.Fatalf("unexpected sendMessage request: %v", req)
 	}
 
 	// Replies in a business chat go through the business connection.
 	e.call("send_message", map[string]any{"chat": "77", "text": "ok"}, &sent)
-	e.api.mu.Lock()
-	req = e.api.sent[1]
-	e.api.mu.Unlock()
-	if req["business_connection_id"] != "bc1" {
+	if req := e.sentRequest(1); req["business_connection_id"] != "bc1" {
 		t.Fatalf("business_connection_id missing: %v", req)
 	}
 
 	var msgs mcpserver.MessagesOutput
 	e.call("get_messages", map[string]any{"chat": "-100"}, &msgs)
-	if !equal(ids(msgs), 10, 11, 12, 500) {
-		t.Fatalf("sent message was not archived: %v", ids(msgs))
+	if want := []int64{10, 11, 12, 500}; !slices.Equal(ids(msgs), want) {
+		t.Fatalf("sent message was not archived: %v, want %v", ids(msgs), want)
 	}
 
 	var status struct {
@@ -386,32 +538,118 @@ func TestSendMessageAndStatus(t *testing.T) {
 	}
 }
 
-func TestSendToolIsOptIn(t *testing.T) {
+func TestSendMessageErrors(t *testing.T) {
+	e := setup(t)
+	tests := []struct {
+		name string
+		give map[string]any
+	}{
+		{name: "blank text", give: map[string]any{"chat": "альфа", "text": "  "}},
+		{name: "unknown chat", give: map[string]any{"chat": "нет такого", "text": "hi"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if res := e.call("send_message", tt.give, nil); !res.IsError {
+				t.Fatal("want a tool error")
+			}
+		})
+	}
+}
+
+func TestToolsExposed(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	ctx := context.Background()
-	st, ct := mcp.NewInMemoryTransports()
-	if _, err := mcpserver.New(mcpserver.Options{Store: db}).Connect(ctx, st, nil); err != nil {
-		t.Fatal(err)
+
+	readTools := []string{
+		"get_message_context",
+		"get_messages",
+		"get_new_messages",
+		"get_status",
+		"list_chats",
+		"search_messages",
 	}
-	session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(ctx, ct, nil)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		opts mcpserver.Options
+		want []string
+	}{
+		{
+			name: "send_message is opt-in",
+			opts: mcpserver.Options{Store: db},
+			want: readTools,
+		},
+		{
+			name: "send_message with a sender",
+			opts: mcpserver.Options{Store: db, Sender: telegram.New(_token, "")},
+			want: append([]string{"send_message"}, readTools...),
+		},
 	}
-	res, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			st, ct := mcp.NewInMemoryTransports()
+			if _, err := mcpserver.New(tt.opts).Connect(ctx, st, nil); err != nil {
+				t.Fatal(err)
+			}
+			session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(ctx, ct, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+
+			res, err := session.ListTools(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(res.Tools))
+			for _, tool := range res.Tools {
+				got = append(got, tool.Name)
+			}
+			slices.Sort(got)
+			want := slices.Sorted(slices.Values(tt.want))
+			if !slices.Equal(got, want) {
+				t.Fatalf("tools = %v, want %v", got, want)
+			}
+		})
 	}
-	for _, tool := range res.Tools {
-		if tool.Name == "send_message" {
-			t.Fatal("send_message must not be exposed without a sender")
-		}
+}
+
+func TestServerVersion(t *testing.T) {
+	tests := []struct {
+		name string
+		give string
+		want string
+	}{
+		{name: "injected", give: "v1.2.3", want: "v1.2.3"},
+		{name: "default", give: "", want: "dev"},
 	}
-	if len(res.Tools) != 6 {
-		t.Fatalf("want 6 read tools, got %d", len(res.Tools))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			ctx := context.Background()
+			st, ct := mcp.NewInMemoryTransports()
+			srv := mcpserver.New(mcpserver.Options{Store: db, Version: tt.give})
+			if _, err := srv.Connect(ctx, st, nil); err != nil {
+				t.Fatal(err)
+			}
+			session, err := mcp.NewClient(&mcp.Implementation{Name: "test"}, nil).Connect(ctx, ct, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+
+			if got := session.InitializeResult().ServerInfo.Version; got != tt.want {
+				t.Fatalf("server version = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
