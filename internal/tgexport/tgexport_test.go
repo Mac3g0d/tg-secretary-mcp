@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,8 +13,8 @@ import (
 	"github.com/mac3g0d/tg-secretary-mcp/internal/store"
 )
 
-// _personalChat is a single-chat export in the layout Telegram Desktop writes.
-const _personalChat = `{
+// _personalExport is a single-chat export in the layout Telegram Desktop writes.
+const _personalExport = `{
  "name": "Иван Петров",
  "type": "personal_chat",
  "id": 111,
@@ -53,13 +54,27 @@ const _fullExport = `{
   "list": [
    {"name": "Команда", "type": "private_supergroup", "id": 1234567890, "messages": [
     {"id": 10, "type": "message", "date": "2024-02-01T10:00:00", "date_unixtime": "1706781600",
-     "from": "Мария", "from_id": "user333", "text": "Всем привет", "text_entities": []},
-    {"id": 11, "type": "message", "date": "2024-02-01T10:01:00", "date_unixtime": "1706781660",
-     "from": "Я", "from_id": "user222", "text": "Привет", "text_entities": []},
-    {"id": 12, "type": "message", "date": "2024-02-01T10:02:00", "date_unixtime": "1706781720",
-     "from": "Команда", "from_id": "channel1234567890", "text": "от имени группы", "text_entities": []}
+     "from": "Мария", "from_id": "user333", "text": "Всем привет", "text_entities": []}
+   ]},
+   {"name": "Мария", "type": "personal_chat", "id": 888, "messages": [
+    {"id": 1, "type": "message", "date": "2024-02-01T10:00:00", "date_unixtime": "1706781600",
+     "from": "Мария", "from_id": "user888", "text": "Привет", "text_entities": []},
+    {"id": 2, "type": "message", "date": "2024-02-01T10:01:00", "date_unixtime": "1706781660",
+     "from": "Я", "from_id": "user222", "text": "Привет!", "text_entities": []}
    ]},
    {"name": "Дача", "type": "private_group", "id": 555, "messages": []},
+   {"name": "Канал", "type": "public_channel", "id": 42, "messages": [
+    {"id": 1, "type": "message", "date_unixtime": "1706781600", "from": "Канал",
+     "from_id": "channel42", "text": "пост"}
+   ]},
+   {"name": "BotFather", "type": "bot_chat", "id": 93372553, "messages": [
+    {"id": 1, "type": "message", "date_unixtime": "1706781600", "from": "Я",
+     "from_id": "user222", "text": "/start"}
+   ]},
+   {"name": null, "type": "saved_messages", "id": 222, "messages": [
+    {"id": 1, "type": "message", "date_unixtime": "1706781600", "from": "Я",
+     "from_id": "user222", "text": "заметка"}
+   ]},
    {"name": null, "type": "personal_chat", "id": 777, "messages": [
     {"id": 1, "type": "message", "date": "2024-02-02T10:00:00",
      "from": null, "from_id": "user777", "text": "без unixtime", "text_entities": []}
@@ -95,7 +110,7 @@ func TestImportPersonalChat(t *testing.T) {
 	ctx := context.Background()
 	db := newStore(t)
 
-	res, err := Import(ctx, db, strings.NewReader(_personalChat))
+	res, err := Import(ctx, db, strings.NewReader(_personalExport))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +184,7 @@ func TestImportIsIdempotentAndKeepsLiveData(t *testing.T) {
 		{ChatID: 111, Title: "Иван Петров", Type: "private", Imported: 4, AlreadyStored: 1, Skipped: 2},
 		{ChatID: 111, Title: "Иван Петров", Type: "private", Imported: 0, AlreadyStored: 5, Skipped: 2},
 	} {
-		res, err := Import(ctx, db, strings.NewReader(_personalChat))
+		res, err := Import(ctx, db, strings.NewReader(_personalExport))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -197,44 +212,83 @@ func TestImportIsIdempotentAndKeepsLiveData(t *testing.T) {
 	}
 }
 
-func TestImportFullExport(t *testing.T) {
+func TestImportFullExportTakesOnlyPersonalChats(t *testing.T) {
 	db := newStore(t)
 
 	res, err := Import(context.Background(), db, strings.NewReader(_fullExport))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []ChatResult{
-		{ChatID: -1001234567890, Title: "Команда", Type: "supergroup", Imported: 3},
-		{ChatID: -555, Title: "Дача", Type: "group"},
+	wantChats := []ChatResult{
+		{ChatID: 888, Title: "Мария", Type: "private", Imported: 2},
 		{ChatID: 777, Title: "Deleted Account", Type: "private", Imported: 1},
 	}
-	if len(res.Chats) != len(want) {
-		t.Fatalf("result = %+v, want %+v", res.Chats, want)
+	if !slices.Equal(res.Chats, wantChats) {
+		t.Errorf("chats = %+v, want %+v", res.Chats, wantChats)
 	}
-	for i := range want {
-		if res.Chats[i] != want[i] {
-			t.Errorf("chat %d = %+v, want %+v", i, res.Chats[i], want[i])
-		}
+	wantSkipped := []UnsupportedChat{
+		{Title: "Команда", Type: "private_supergroup"},
+		{Title: "Дача", Type: "private_group"},
+		{Title: "Канал", Type: "public_channel"},
+		{Title: "BotFather", Type: "bot_chat"},
+		{Title: "", Type: "saved_messages"},
+	}
+	if !slices.Equal(res.Unsupported, wantSkipped) {
+		t.Errorf("unsupported = %+v, want %+v", res.Unsupported, wantSkipped)
 	}
 
-	team := messages(t, db, -1001234567890)
-	if len(team) != 3 {
-		t.Fatalf("%d messages in the supergroup, want 3", len(team))
+	stats, err := db.Stats(context.Background())
+	if err != nil || stats.Chats != 2 || stats.Messages != 3 {
+		t.Errorf("archive holds %d chats and %d messages (%v), want 2 and 3",
+			stats.Chats, stats.Messages, err)
 	}
-	// The owner is known from personal_information, so groups get it right too.
-	if team[0].Outgoing || !team[1].Outgoing || team[2].Outgoing {
-		t.Errorf("outgoing flags = %v %v %v, want false true false",
-			team[0].Outgoing, team[1].Outgoing, team[2].Outgoing)
-	}
-	if team[2].SenderID != -1001234567890 {
-		t.Errorf("channel sender id = %d", team[2].SenderID)
+
+	// The owner is known from personal_information.
+	maria := messages(t, db, 888)
+	if len(maria) != 2 || maria[0].Outgoing || !maria[1].Outgoing {
+		t.Errorf("outgoing flags wrong: %+v", maria)
 	}
 
 	deleted := messages(t, db, 777)
 	wantDate := time.Date(2024, 2, 2, 10, 0, 0, 0, time.Local)
 	if len(deleted) != 1 || deleted[0].SenderName != "Deleted Account" || !deleted[0].Date.Equal(wantDate) {
 		t.Errorf("deleted-account chat = %+v", deleted)
+	}
+}
+
+func TestImportRejectsNonPersonalChat(t *testing.T) {
+	tests := []struct {
+		name string
+		give string
+	}{
+		{name: "supergroup", give: "private_supergroup"},
+		{name: "basic group", give: "private_group"},
+		{name: "channel", give: "public_channel"},
+		{name: "bot chat", give: "bot_chat"},
+		{name: "saved messages", give: "saved_messages"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := newStore(t)
+			export := `{"name": "Команда", "type": "` + tt.give + `", "id": 5, "messages": [
+				{"id": 1, "type": "message", "date_unixtime": "1700000000",
+				 "from": "Мария", "from_id": "user333", "text": "привет"}]}`
+
+			res, err := Import(context.Background(), db, strings.NewReader(export))
+			if !errors.Is(err, ErrNotPersonal) {
+				t.Fatalf("error = %v, want ErrNotPersonal", err)
+			}
+			if !strings.Contains(err.Error(), tt.give) {
+				t.Errorf("error %q should name the chat type", err)
+			}
+			if len(res.Chats) != 0 || len(res.Unsupported) != 1 {
+				t.Errorf("result = %+v", res)
+			}
+			stats, err := db.Stats(context.Background())
+			if err != nil || stats.Chats != 0 || stats.Messages != 0 {
+				t.Errorf("nothing should be stored, got %+v, %v", stats, err)
+			}
+		})
 	}
 }
 
@@ -249,7 +303,7 @@ func TestImportRejectsBadInput(t *testing.T) {
 		{name: "json array", give: `[1, 2]`, wantMsg: "unexpected token ["},
 		{name: "other json", give: `{"foo": {"bar": 1}}`, wantErr: ErrNoChats},
 		{name: "empty full export", give: `{"chats": {"list": []}}`, wantErr: ErrNoChats},
-		{name: "truncated", give: _personalChat[:len(_personalChat)/2], wantMsg: "read export"},
+		{name: "truncated", give: _personalExport[:len(_personalExport)/2], wantMsg: "read export"},
 		{
 			name:    "messages before id",
 			give:    `{"name": "x", "messages": [], "id": 1}`,
@@ -275,14 +329,14 @@ func TestImportLargeChatIsBatched(t *testing.T) {
 	const total = 2*_batchSize + 7
 
 	var b strings.Builder
-	b.WriteString(`{"name": "Big", "type": "public_channel", "id": 42, "messages": [`)
+	b.WriteString(`{"name": "Big", "type": "personal_chat", "id": 42, "messages": [`)
 	for i := 1; i <= total; i++ {
 		if i > 1 {
 			b.WriteByte(',')
 		}
 		b.WriteString(`{"id": `)
 		b.WriteString(strconv.Itoa(i))
-		b.WriteString(`, "type": "message", "date_unixtime": "1700000000", "from": "Big", "from_id": "channel42", "text": "пост"}`)
+		b.WriteString(`, "type": "message", "date_unixtime": "1700000000", "from": "Big", "from_id": "user42", "text": "пост"}`)
 	}
 	b.WriteString(`]}`)
 
@@ -290,7 +344,7 @@ func TestImportLargeChatIsBatched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := ChatResult{ChatID: -1000000000042, Title: "Big", Type: "channel", Imported: total}
+	want := ChatResult{ChatID: 42, Title: "Big", Type: "private", Imported: total}
 	if len(res.Chats) != 1 || res.Chats[0] != want {
 		t.Fatalf("result = %+v, want %+v", res.Chats, want)
 	}
@@ -299,7 +353,7 @@ func TestImportLargeChatIsBatched(t *testing.T) {
 func TestImportStopsWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := Import(ctx, newStore(t), strings.NewReader(_personalChat))
+	_, err := Import(ctx, newStore(t), strings.NewReader(_personalExport))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}

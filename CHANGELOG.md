@@ -9,9 +9,9 @@
 
 - Пересланные сообщения: сохраняются автор и дата оригинала (`forward_origin` Bot API), они видны
   в MCP (`forwarded_from`, `forwarded_from_username`, `forward_date`, фильтр `forwarded_only`) и в веб-интерфейсе.
-- Импорт истории из JSON-экспорта Telegram Desktop без медиа: команда `tg-secretary import`
-  и инструмент MCP `import_chat_export` (каталог задаётся `TG_IMPORT_DIR`). Импорт идемпотентен
-  и не попадает в `get_new_messages`.
+- Импорт истории личных чатов из JSON-экспорта Telegram Desktop без медиа через инструмент MCP
+  `import_chat_export`: экспорт передаётся текстом в вызове (до 8 МБ) или файлом из каталога `TG_IMPORT_DIR`.
+  Импорт идемпотентен и не попадает в `get_new_messages`; группы и каналы не импортируются.
 - Миграции схемы базы (`PRAGMA user_version`); база от v0.1.0 обновляется при первом запуске.
 
 ### Changed

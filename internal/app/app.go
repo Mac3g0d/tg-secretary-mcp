@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,7 +19,6 @@ import (
 	"github.com/mac3g0d/tg-secretary-mcp/internal/mcpserver"
 	"github.com/mac3g0d/tg-secretary-mcp/internal/store"
 	"github.com/mac3g0d/tg-secretary-mcp/internal/telegram"
-	"github.com/mac3g0d/tg-secretary-mcp/internal/tgexport"
 	"github.com/mac3g0d/tg-secretary-mcp/internal/web"
 )
 
@@ -136,7 +134,11 @@ func newHTTPServer(opts Options, db *store.Store, mcpSrv *mcp.Server) (*httpserv
 		AuthToken: cfg.AuthToken,
 		Log:       opts.Log,
 		MCP: mcp.NewStreamableHTTPHandler(
-			func(*http.Request) *mcp.Server { return mcpSrv }, nil),
+			func(*http.Request) *mcp.Server { return mcpSrv },
+			&mcp.StreamableHTTPOptions{
+				// The SDK default (4 MiB) is too small for an inline chat export.
+				MaxRequestBodyBytes: mcpserver.MaxRequestBodyBytes,
+			}),
 	}
 	if cfg.WebUI {
 		ui, err := web.NewHandler(db, opts.Log)
@@ -181,40 +183,4 @@ func (g *group) First() error {
 // Wait blocks until all functions have returned.
 func (g *group) Wait() {
 	g.wg.Wait()
-}
-
-// Import loads Telegram Desktop JSON chat exports into the archive and writes
-// a summary of each file to w. It can run while the bot is collecting.
-func Import(ctx context.Context, cfg *config.Config, paths []string, w io.Writer) error {
-	if len(paths) == 0 {
-		return errors.New("import needs at least one export file (result.json)")
-	}
-	db, err := store.Open(cfg.DBPath)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
-	}
-	defer db.Close()
-
-	for _, path := range paths {
-		if err := importFile(ctx, db, path, w); err != nil {
-			return fmt.Errorf("import %s: %w", path, err)
-		}
-	}
-	return nil
-}
-
-func importFile(ctx context.Context, db *store.Store, path string, w io.Writer) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	res, err := tgexport.Import(ctx, db, f)
-	// Chats finished before a failure are already stored, so report them.
-	for _, c := range res.Chats {
-		fmt.Fprintf(w, "%s: chat %d %q: %d imported, %d already stored, %d skipped\n",
-			path, c.ChatID, c.Title, c.Imported, c.AlreadyStored, c.Skipped)
-	}
-	return err
 }

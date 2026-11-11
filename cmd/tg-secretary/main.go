@@ -28,8 +28,6 @@ Usage:
   tg-secretary serve   run the bot, the MCP server over HTTP and the web UI (recommended)
   tg-secretary bot     run only the bot (message collector)
   tg-secretary stdio   run only the MCP server over stdio, reading the same database
-  tg-secretary import <result.json>...
-                       load Telegram Desktop JSON chat exports into the database
   tg-secretary version
 
 Flags for serve and stdio:
@@ -60,14 +58,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, _usage)
 		return nil
-	case "import":
-		cfg, err := config.Load()
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		return app.Import(ctx, cfg, args[1:], stdout)
 	case "serve", "bot", "stdio":
 	default:
 		fmt.Fprint(stderr, _usage)

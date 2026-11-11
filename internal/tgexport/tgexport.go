@@ -1,8 +1,12 @@
-// Package tgexport loads chat history exported by Telegram Desktop
-// ("Export chat history" → JSON, result.json) into the archive.
+// Package tgexport loads the history of personal (one-to-one) chats exported
+// by Telegram Desktop ("Export chat history" → JSON, result.json) into the
+// archive.
 //
 // Both layouts are understood: a single-chat export, whose top-level object is
 // the chat, and a full account export, which nests chats under chats.list.
+// Groups, channels, bot chats and Saved Messages are not imported: their
+// message numbers differ from what the bot sees, so they could not be merged
+// with live history reliably.
 // Media files are not needed and not read: only the kind of attachment is
 // recorded, the same way the bot does for live messages.
 package tgexport
@@ -25,19 +29,24 @@ const (
 	// so the bot can keep saving live messages during a large import.
 	_batchSize = 1000
 
-	// _supergroupOffset converts the bare ID of a supergroup or channel, as
-	// exports write it, into the "-100…" form the Bot API uses.
-	_supergroupOffset = 1_000_000_000_000
-
 	// _deletedAccount is what Telegram shows for an author without a name.
 	_deletedAccount = "Deleted Account"
 
 	_exportDateLayout = "2006-01-02T15:04:05"
+
+	// _personalChat is the only chat type that is imported.
+	_personalChat = "personal_chat"
 )
 
-// ErrNoChats is returned when the input holds no chat history at all, which
-// usually means it is not a Telegram export.
-var ErrNoChats = errors.New("no chats found: not a Telegram Desktop JSON export")
+var (
+	// ErrNoChats is returned when the input holds no chat history at all,
+	// which usually means it is not a Telegram export.
+	ErrNoChats = errors.New("no chats found: not a Telegram Desktop JSON export")
+
+	// ErrNotPersonal is returned when the export holds chats, but none of
+	// them is a personal chat.
+	ErrNotPersonal = errors.New("only personal chats can be imported")
+)
 
 // Importer is the part of the archive an import writes to.
 type Importer interface {
@@ -61,9 +70,20 @@ type ChatResult struct {
 	Skipped int64
 }
 
+// UnsupportedChat is a chat that was left out because it is not personal.
+type UnsupportedChat struct {
+	Title string
+	// Type is the export's own name for the kind of chat, for example
+	// "private_supergroup" or "public_channel".
+	Type string
+}
+
 // Result summarises an import.
 type Result struct {
+	// Chats lists the personal chats that were imported.
 	Chats []ChatResult
+	// Unsupported lists the chats that were skipped.
+	Unsupported []UnsupportedChat
 }
 
 // Import reads a Telegram Desktop JSON export from r and stores its messages.
@@ -78,10 +98,15 @@ func Import(ctx context.Context, dst Importer, r io.Reader) (Result, error) {
 	if err := imp.readExport(); err != nil {
 		return imp.result, fmt.Errorf("read export: %w", err)
 	}
-	if len(imp.result.Chats) == 0 {
+	switch {
+	case len(imp.result.Chats) > 0:
+		return imp.result, nil
+	case len(imp.result.Unsupported) > 0:
+		first := imp.result.Unsupported[0]
+		return imp.result, fmt.Errorf("%w: %q is a %s", ErrNotPersonal, first.Title, first.Type)
+	default:
 		return imp.result, ErrNoChats
 	}
-	return imp.result, nil
 }
 
 type importer struct {
@@ -149,6 +174,14 @@ func (imp *importer) readMessages(header chatHeader) error {
 	if header.ID == 0 {
 		return errors.New(`"messages" comes before the chat "id": unsupported export layout`)
 	}
+	if header.Type != _personalChat {
+		imp.result.Unsupported = append(imp.result.Unsupported, UnsupportedChat{
+			Title: header.Name,
+			Type:  header.Type,
+		})
+		return imp.array(imp.skip)
+	}
+
 	chat := header.chat()
 	res := ChatResult{
 		ChatID: chat.ID,
@@ -281,23 +314,14 @@ func (h *chatHeader) field(key string, imp *importer) error {
 	}
 }
 
-// chat maps the export's chat to the archive's, using the same IDs and types
-// as the Bot API so imported history lands in the chat the bot writes to.
+// chat maps the export's chat to the archive's. A personal chat is
+// identified by the other side's user ID, exactly as the Bot API reports it,
+// so imported history lands in the chat the bot writes to.
 func (h chatHeader) chat() store.Chat {
 	c := store.Chat{
 		ID:    h.ID,
 		Type:  "private",
 		Title: h.Name,
-	}
-	switch h.Type {
-	case "private_group":
-		c.ID, c.Type = -h.ID, "group"
-	case "private_supergroup", "public_supergroup":
-		c.ID, c.Type = -(_supergroupOffset + h.ID), "supergroup"
-	case "private_channel", "public_channel":
-		c.ID, c.Type = -(_supergroupOffset + h.ID), "channel"
-	case "saved_messages":
-		c.Title = "Saved Messages"
 	}
 	if c.Title == "" {
 		c.Title = _deletedAccount
@@ -364,14 +388,11 @@ func (e exportMessage) message(chat chatHeader, ownerID int64) (store.Message, b
 		}
 	}
 
-	switch {
-	case ownerID != 0:
+	if ownerID != 0 {
 		m.Outgoing = m.SenderID == ownerID
-	case chat.Type == "saved_messages":
-		m.Outgoing = true
-	case chat.Type == "personal_chat" || chat.Type == "bot_chat":
-		// In a one-to-one chat the chat ID is the other side's user ID, so
-		// everything else was written by the exporting account.
+	} else {
+		// The chat ID is the other side's user ID, so everything else was
+		// written by the exporting account.
 		m.Outgoing = m.SenderID != 0 && m.SenderID != chat.ID
 	}
 	return m, true
@@ -449,26 +470,16 @@ func flattenText(raw json.RawMessage) string {
 	return b.String()
 }
 
-// senderID converts an export's from_id ("user123", "channel456", "chat789")
-// into the numeric ID the Bot API would report, or 0 if it has another form.
+// senderID converts an export's from_id ("user123") into the numeric user ID,
+// or 0 if it has another form.
 func senderID(fromID string) int64 {
-	for _, p := range []struct {
-		prefix string
-		toID   func(int64) int64
-	}{
-		{"user", func(id int64) int64 { return id }},
-		{"channel", func(id int64) int64 { return -(_supergroupOffset + id) }},
-		{"chat", func(id int64) int64 { return -id }},
-	} {
-		rest, ok := strings.CutPrefix(fromID, p.prefix)
-		if !ok {
-			continue
-		}
-		id, err := strconv.ParseInt(rest, 10, 64)
-		if err != nil {
-			return 0
-		}
-		return p.toID(id)
+	rest, ok := strings.CutPrefix(fromID, "user")
+	if !ok {
+		return 0
 	}
-	return 0
+	id, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }

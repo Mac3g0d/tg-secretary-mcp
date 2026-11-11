@@ -64,7 +64,11 @@ func write(t *testing.T, path, content string) {
 type importResult struct {
 	Directory string   `json:"directory"`
 	Files     []string `json:"available_files"`
-	Chats     []struct {
+	Skipped   []struct {
+		Chat string `json:"chat"`
+		Type string `json:"type"`
+	} `json:"skipped_chats"`
+	Chats []struct {
 		ChatID        int64  `json:"chat_id"`
 		Chat          string `json:"chat"`
 		Imported      int64  `json:"imported"`
@@ -141,6 +145,7 @@ func TestImportChatExportIsConfinedToItsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(dir, "broken.json"), `{"name": "x"`)
+	write(t, filepath.Join(dir, "group.json"), strings.Replace(_export, "personal_chat", "private_group", 1))
 
 	tests := []struct {
 		name string
@@ -151,6 +156,7 @@ func TestImportChatExportIsConfinedToItsDirectory(t *testing.T) {
 		{name: "symlink out of the directory", give: "link.json"},
 		{name: "missing file", give: "nope.json"},
 		{name: "not an export", give: "broken.json"},
+		{name: "group export", give: "group.json"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -205,6 +211,54 @@ func TestImportToolNeedsADirectory(t *testing.T) {
 			})
 			if got != tt.want {
 				t.Errorf("import_chat_export offered = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestImportChatExportInlineContent(t *testing.T) {
+	e, dir := newImportEnv(t)
+	write(t, filepath.Join(dir, "result.json"), _export)
+
+	var res importResult
+	e.call("import_chat_export", map[string]any{"content": _export}, &res)
+	if len(res.Chats) != 1 || res.Chats[0].ChatID != 111 || res.Chats[0].Imported != 2 {
+		t.Fatalf("inline import = %+v", res.Chats)
+	}
+	// The same history arriving by file is recognised as already stored.
+	e.call("import_chat_export", map[string]any{"file": "result.json"}, &res)
+	if res.Chats[0].Imported != 0 || res.Chats[0].AlreadyStored != 2 {
+		t.Fatalf("file after inline = %+v", res.Chats)
+	}
+
+	// A full export keeps its personal chats and reports the rest.
+	full := `{"personal_information": {"user_id": 222}, "chats": {"list": [
+		{"name": "Команда", "type": "private_supergroup", "id": 9, "messages": [
+		 {"id": 1, "type": "message", "date_unixtime": "1700000000", "from": "A", "from_id": "user1", "text": "x"}]},
+		{"name": "Мария", "type": "personal_chat", "id": 888, "messages": [
+		 {"id": 1, "type": "message", "date_unixtime": "1700000000", "from": "Мария", "from_id": "user888", "text": "y"}]}
+	]}}`
+	e.call("import_chat_export", map[string]any{"content": full}, &res)
+	if len(res.Chats) != 1 || res.Chats[0].ChatID != 888 ||
+		len(res.Skipped) != 1 || res.Skipped[0].Chat != "Команда" || res.Skipped[0].Type != "private_supergroup" {
+		t.Fatalf("full export = %+v", res)
+	}
+
+	tests := []struct {
+		name string
+		give map[string]any
+	}{
+		{name: "content and file together", give: map[string]any{"content": _export, "file": "result.json"}},
+		{name: "content that is not an export", give: map[string]any{"content": "привет"}},
+		{name: "group chat", give: map[string]any{
+			"content": strings.Replace(_export, "personal_chat", "public_supergroup", 1)}},
+		{name: "content over the limit", give: map[string]any{
+			"content": _export + strings.Repeat(" ", 8<<20)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if res := e.call("import_chat_export", tt.give, nil); !res.IsError {
+				t.Fatal("expected a tool error")
 			}
 		})
 	}
