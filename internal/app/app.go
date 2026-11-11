@@ -83,6 +83,7 @@ func Run(ctx context.Context, opts Options) error {
 			Store:        db,
 			Log:          opts.Log,
 			AllowedChats: cfg.AllowedChats,
+			Avatars:      cfg.Avatars,
 		})
 		g.Go(func() error { return c.Run(ctx) })
 	}

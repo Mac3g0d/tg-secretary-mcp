@@ -486,3 +486,71 @@ func TestForwardedMessageIsMarked(t *testing.T) {
 		t.Error("forward origin is missing or not escaped")
 	}
 }
+
+func TestAvatars(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	for _, c := range []store.Chat{{ID: 1, Title: "анна"}, {ID: -100200, Title: "«Проект»"}} {
+		if err := db.UpsertChat(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	picture := []byte("\x89PNG\r\n\x1a\n-fake-")
+	err = db.SavePhoto(ctx, 1, store.Photo{UniqueID: "v 1", ContentType: "image/png", Data: picture})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	page, _ := get(t, ts, "/", http.StatusOK)
+	if !strings.Contains(page, `<img class="avatar" src="/avatar/1?v=v&#43;1"`) {
+		t.Errorf("chat with a picture should show it:\n%s", page)
+	}
+	// No picture: the first letter of the title, skipping punctuation.
+	if !strings.Contains(page, `aria-hidden="true">П</span>`) {
+		t.Error("chat without a picture should show its initial")
+	}
+
+	body, header := get(t, ts, "/avatar/1?v=anything", http.StatusOK)
+	if body != string(picture) || header.Get("Content-Type") != "image/png" {
+		t.Errorf("avatar response: %q, %s", body, header.Get("Content-Type"))
+	}
+	if cc := header.Get("Cache-Control"); !strings.Contains(cc, "private") || !strings.Contains(cc, "immutable") {
+		t.Errorf("Cache-Control = %q", cc)
+	}
+	if header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("avatar responses must not be sniffed")
+	}
+
+	for _, path := range []string{"/avatar/-100200", "/avatar/999", "/avatar/abc", "/avatar/"} {
+		get(t, ts, path, http.StatusNotFound)
+	}
+}
+
+func TestInitial(t *testing.T) {
+	tests := []struct {
+		give string
+		want string
+	}{
+		{give: "анна", want: "А"},
+		{give: "«Проект» 2", want: "П"},
+		{give: "42-й чат", want: "4"},
+		{give: "🙂 smile", want: "S"},
+		{give: "…", want: "#"},
+		{give: "", want: "#"},
+	}
+	for _, tt := range tests {
+		if got := initial(tt.give); got != tt.want {
+			t.Errorf("initial(%q) = %q, want %q", tt.give, got, tt.want)
+		}
+	}
+}

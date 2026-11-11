@@ -1,9 +1,11 @@
 package web
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mac3g0d/tg-secretary-mcp/internal/store"
 )
@@ -41,12 +43,22 @@ func pagerLink(url, label string) *link {
 	return &link{URL: url, Label: label}
 }
 
+// _avatarColors is the number of .avatar-N background classes in the
+// stylesheet. Colours come from classes because the page's content security
+// policy forbids inline styles.
+const _avatarColors = 7
+
 type chatView struct {
-	Title   string
-	Count   int64
-	Preview string
-	URL     string
-	Active  bool
+	// AvatarURL is the chat's picture, or "" when the Initial is shown on a
+	// background picked by AvatarColor instead.
+	AvatarURL   string
+	Initial     string
+	AvatarColor int
+	Title       string
+	Count       int64
+	Preview     string
+	URL         string
+	Active      bool
 }
 
 type messageView struct {
@@ -78,15 +90,35 @@ func chatViews(chats []store.ChatSummary, active int64) (views []chatView, activ
 		if isActive {
 			activeTitle = title
 		}
-		views = append(views, chatView{
-			Title:   title,
-			Count:   c.MessageCount,
-			Preview: truncate(c.LastText, _previewLength),
-			URL:     request{chatID: c.Chat.ID}.url(),
-			Active:  isActive,
-		})
+		v := chatView{
+			Initial:     initial(title),
+			AvatarColor: int(uint64(c.Chat.ID) % _avatarColors),
+			Title:       title,
+			Count:       c.MessageCount,
+			Preview:     truncate(c.LastText, _previewLength),
+			URL:         request{chatID: c.Chat.ID}.url(),
+			Active:      isActive,
+		}
+		if c.PhotoID != "" {
+			// The version in the query lets browsers cache a picture for
+			// good and still pick up a new one at once.
+			v.AvatarURL = "/avatar/" + strconv.FormatInt(c.Chat.ID, 10) +
+				"?v=" + url.QueryEscape(c.PhotoID)
+		}
+		views = append(views, v)
 	}
 	return views, activeTitle
+}
+
+// initial returns the first letter or digit of title in upper case, the
+// placeholder shown for a chat without a picture.
+func initial(title string) string {
+	for _, r := range title {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return string(unicode.ToUpper(r))
+		}
+	}
+	return "#"
 }
 
 // messageViews renders msgs for req. singleChat tells whether the list is one

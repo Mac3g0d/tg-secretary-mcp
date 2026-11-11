@@ -12,6 +12,7 @@ var _envKeys = []string{
 	"TELEGRAM_API_URL",
 	"TG_DB_PATH",
 	"TG_IMPORT_DIR",
+	"TG_AVATARS",
 	"TG_ALLOWED_CHATS",
 	"TG_ALLOW_SEND",
 	"MCP_ADDR",
@@ -50,6 +51,7 @@ func TestLoad(t *testing.T) {
 				Addr:         "127.0.0.1:8080",
 				WebUI:        true,
 				ImportDir:    "data/import",
+				Avatars:      true,
 				AllowedChats: map[int64]bool{},
 			},
 		},
@@ -60,6 +62,7 @@ func TestLoad(t *testing.T) {
 				"TELEGRAM_API_URL":   "http://localhost:8081",
 				"TG_DB_PATH":         "/tmp/x.db",
 				"TG_IMPORT_DIR":      "off",
+				"TG_AVATARS":         "false",
 				"TG_ALLOWED_CHATS":   "1, -100 ,2",
 				"TG_ALLOW_SEND":      "true",
 				"MCP_ADDR":           "0.0.0.0:9000",
@@ -76,6 +79,7 @@ func TestLoad(t *testing.T) {
 				AuthToken:    "secret",
 				WebUI:        false,
 				ImportDir:    "",
+				Avatars:      false,
 			},
 		},
 		{
@@ -90,6 +94,7 @@ func TestLoad(t *testing.T) {
 				Addr:         "127.0.0.1:8080",
 				WebUI:        true,
 				ImportDir:    "data/import",
+				Avatars:      true,
 				AllowedChats: map[int64]bool{},
 			},
 		},
@@ -113,6 +118,7 @@ WEB_UI=0
 				AuthToken:    "tok en",
 				WebUI:        false,
 				ImportDir:    "data/import",
+				Avatars:      true,
 			},
 		},
 		{
@@ -125,6 +131,7 @@ WEB_UI=0
 				Addr:         "127.0.0.1:1111",
 				WebUI:        true,
 				ImportDir:    "data/import",
+				Avatars:      true,
 			},
 		},
 		{
@@ -137,6 +144,7 @@ WEB_UI=0
 				Addr:         "127.0.0.1:8080",
 				WebUI:        true,
 				ImportDir:    "data/import",
+				Avatars:      true,
 			},
 		},
 		{

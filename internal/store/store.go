@@ -90,6 +90,15 @@ var _migrations = []string{
 	 ALTER TABLE messages ADD COLUMN forward_from_username TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE messages ADD COLUMN forward_date INTEGER NOT NULL DEFAULT 0;
 	 ALTER TABLE messages ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;`,
+	// 2: chat profile pictures. A row also records that a chat was checked
+	// and has no picture (data IS NULL), so it is not asked about again soon.
+	`CREATE TABLE chat_photos (
+	     chat_id      INTEGER PRIMARY KEY REFERENCES chats(id),
+	     unique_id    TEXT    NOT NULL DEFAULT '',
+	     content_type TEXT    NOT NULL DEFAULT '',
+	     data         BLOB,
+	     checked_at   INTEGER NOT NULL
+	 );`,
 }
 
 const (

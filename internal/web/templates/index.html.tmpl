@@ -11,15 +11,25 @@
   <h1><a href="/">Секретарь</a></h1>
   <nav aria-label="Чаты">
     <a class="chat{{if not .ChatID}} active{{end}}" href="/">
-      <span class="chat-title">Все сообщения</span>
+      <span class="avatar avatar-all" aria-hidden="true">≡</span>
+      <span class="chat-body">
+        <span class="chat-title">Все сообщения</span>
+      </span>
     </a>
     {{- range .Chats}}
     <a class="chat{{if .Active}} active{{end}}" href="{{.URL}}">
-      <span class="chat-top">
-        <span class="chat-title">{{.Title}}</span>
-        <span class="chat-count">{{.Count}}</span>
+      {{- if .AvatarURL}}
+      <img class="avatar" src="{{.AvatarURL}}" alt="" width="40" height="40" loading="lazy">
+      {{- else}}
+      <span class="avatar avatar-{{.AvatarColor}}" aria-hidden="true">{{.Initial}}</span>
+      {{- end}}
+      <span class="chat-body">
+        <span class="chat-top">
+          <span class="chat-title">{{.Title}}</span>
+          <span class="chat-count">{{.Count}}</span>
+        </span>
+        <span class="chat-preview">{{.Preview}}</span>
       </span>
-      <span class="chat-preview">{{.Preview}}</span>
     </a>
     {{- end}}
   </nav>

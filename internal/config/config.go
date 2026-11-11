@@ -35,6 +35,9 @@ type Config struct {
 	AuthToken string
 	// WebUI is WEB_UI (default true): serve the browser UI next to /mcp.
 	WebUI bool
+	// Avatars is TG_AVATARS (default true): download chat profile pictures
+	// for the web UI.
+	Avatars bool
 	// ImportDir is TG_IMPORT_DIR: the directory agents may import chat
 	// exports from. It is empty when the variable is "off".
 	ImportDir string
@@ -48,6 +51,10 @@ func Load() (*Config, error) {
 	}
 
 	webUI, err := envBool("WEB_UI", true)
+	if err != nil {
+		return nil, err
+	}
+	avatars, err := envBool("TG_AVATARS", true)
 	if err != nil {
 		return nil, err
 	}
@@ -67,6 +74,7 @@ func Load() (*Config, error) {
 
 	return &Config{
 		ImportDir:    importDir,
+		Avatars:      avatars,
 		BotToken:     os.Getenv("TELEGRAM_BOT_TOKEN"),
 		APIURL:       os.Getenv("TELEGRAM_API_URL"),
 		DBPath:       envString("TG_DB_PATH", _defaultDBPath),

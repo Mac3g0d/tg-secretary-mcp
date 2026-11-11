@@ -47,15 +47,40 @@ h1 { margin: 0; padding: 14px 12px; font-size: 17px; border-bottom: 1px solid va
 h1 a { color: inherit; }
 nav { overflow-y: auto; flex: 1; }
 .chat {
-  display: block;
-  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: inherit;
 }
+.chat-body { flex: 1; min-width: 0; display: block; }
+.avatar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  color: #fff;
+  font-weight: 600;
+  font-size: 17px;
+}
+/* Placeholder backgrounds; all keep white text readable in both themes. */
+.avatar-0 { background: #c0504d; }
+.avatar-1 { background: #b9770e; }
+.avatar-2 { background: #6b8e23; }
+.avatar-3 { background: #2e8b77; }
+.avatar-4 { background: #2e75b6; }
+.avatar-5 { background: #7b61c4; }
+.avatar-6 { background: #b0508f; }
+.avatar-all { background: var(--muted); }
 .chat:hover { background: var(--bg); text-decoration: none; }
 .chat.active { background: var(--bubble-out); }
 .chat-top { display: flex; justify-content: space-between; gap: 8px; }
-.chat-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-title { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-count { color: var(--muted); font-size: 12px; flex-shrink: 0; }
 .chat-preview {
   display: block;
