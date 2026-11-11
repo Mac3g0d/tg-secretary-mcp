@@ -1,9 +1,11 @@
 package web
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mac3g0d/tg-secretary-mcp/internal/store"
 )
@@ -41,12 +43,22 @@ func pagerLink(url, label string) *link {
 	return &link{URL: url, Label: label}
 }
 
+// _avatarColors is the number of .avatar-N background classes in the
+// stylesheet. Colours come from classes because the page's content security
+// policy forbids inline styles.
+const _avatarColors = 7
+
 type chatView struct {
-	Title   string
-	Count   int64
-	Preview string
-	URL     string
-	Active  bool
+	// AvatarURL is the chat's picture, or "" when the Initial is shown on a
+	// background picked by AvatarColor instead.
+	AvatarURL   string
+	Initial     string
+	AvatarColor int
+	Title       string
+	Count       int64
+	Preview     string
+	URL         string
+	Active      bool
 }
 
 type messageView struct {
@@ -56,6 +68,7 @@ type messageView struct {
 	Date       string
 	DateISO    string
 	Media      string
+	Forwarded  string // "переслано от …" label, empty for ordinary messages
 	Segments   []segment
 	ContextURL string
 	Outgoing   bool
@@ -77,27 +90,47 @@ func chatViews(chats []store.ChatSummary, active int64) (views []chatView, activ
 		if isActive {
 			activeTitle = title
 		}
-		views = append(views, chatView{
-			Title:   title,
-			Count:   c.MessageCount,
-			Preview: truncate(c.LastText, _previewLength),
-			URL:     request{chatID: c.Chat.ID}.url(),
-			Active:  isActive,
-		})
+		v := chatView{
+			Initial:     initial(title),
+			AvatarColor: int(uint64(c.Chat.ID) % _avatarColors),
+			Title:       title,
+			Count:       c.MessageCount,
+			Preview:     truncate(c.LastText, _previewLength),
+			URL:         request{chatID: c.Chat.ID}.url(),
+			Active:      isActive,
+		}
+		if c.PhotoID != "" {
+			// The version in the query lets browsers cache a picture for
+			// good and still pick up a new one at once.
+			v.AvatarURL = "/avatar/" + strconv.FormatInt(c.Chat.ID, 10) +
+				"?v=" + url.QueryEscape(c.PhotoID)
+		}
+		views = append(views, v)
 	}
 	return views, activeTitle
 }
 
-// messageViews renders msgs for req. chronological tells whether the list is a
-// single chat read top to bottom, in which case each message omits its chat.
-func messageViews(msgs []store.Message, req request, chronological bool) []messageView {
+// initial returns the first letter or digit of title in upper case, the
+// placeholder shown for a chat without a picture.
+func initial(title string) string {
+	for _, r := range title {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return string(unicode.ToUpper(r))
+		}
+	}
+	return "#"
+}
+
+// messageViews renders msgs for req. singleChat tells whether the list is one
+// chat without a search, in which case each message omits its chat name.
+func messageViews(msgs []store.Message, req request, singleChat bool) []messageView {
 	terms := strings.Fields(strings.ToLower(req.query))
 	views := make([]messageView, 0, len(msgs))
 	for _, m := range msgs {
 		v := messageView{
 			Sender:   m.SenderName,
 			Chat:     m.ChatTitle,
-			ShowChat: !chronological && req.around == 0,
+			ShowChat: !singleChat && req.around == 0,
 			Date:     m.Date.Format(_dateLayout),
 			DateISO:  m.Date.Format(time.RFC3339),
 			Media:    m.MediaType,
@@ -109,6 +142,9 @@ func messageViews(msgs []store.Message, req request, chronological bool) []messa
 		}
 		if v.Sender == "" {
 			v.Sender = m.SenderUsername
+		}
+		if m.Forwarded() {
+			v.Forwarded = forwardLabel(m)
 		}
 		if v.ShowChat {
 			v.ContextURL = request{
@@ -128,4 +164,20 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// forwardLabel describes the origin of a forwarded message.
+func forwardLabel(m store.Message) string {
+	from := m.ForwardFrom
+	if from == "" && m.ForwardFromUsername != "" {
+		from = "@" + m.ForwardFromUsername
+	}
+	label := "переслано"
+	if from != "" {
+		label += " от " + from
+	}
+	if !m.ForwardDate.IsZero() {
+		label += ", " + m.ForwardDate.Format(_dateLayout)
+	}
+	return label
 }

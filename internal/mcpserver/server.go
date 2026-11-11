@@ -33,12 +33,16 @@ type Options struct {
 	Sender *telegram.Client
 	// Version is reported to MCP clients. It defaults to "dev".
 	Version string
+	// ImportDir is the only directory import_chat_export may read chat
+	// exports from. The tool is not offered when it is empty.
+	ImportDir string
 }
 
 // tools holds the dependencies shared by all tool handlers.
 type tools struct {
-	store  *store.Store
-	sender *telegram.Client
+	store     *store.Store
+	sender    *telegram.Client
+	importDir string
 }
 
 // New builds the MCP server.
@@ -56,7 +60,7 @@ func New(opts Options) *mcp.Server {
 		&mcp.ServerOptions{Instructions: _instructions},
 	)
 
-	t := &tools{store: opts.Store, sender: opts.Sender}
+	t := &tools{store: opts.Store, sender: opts.Sender, importDir: opts.ImportDir}
 	t.addListChats(srv)
 	t.addGetMessages(srv)
 	t.addSearchMessages(srv)
@@ -65,6 +69,9 @@ func New(opts Options) *mcp.Server {
 	t.addGetStatus(srv)
 	if opts.Sender != nil {
 		t.addSendMessage(srv)
+	}
+	if opts.ImportDir != "" {
+		t.addImportChatExport(srv)
 	}
 	return srv
 }

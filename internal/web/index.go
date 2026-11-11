@@ -45,9 +45,9 @@ func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 		p.Title = activeTitle
 	}
 
-	// A chat without a search reads top to bottom like a messenger; search
-	// results and the combined feed are newest first.
-	chronological := req.chatID != 0 && req.query == ""
+	// Every view reads top to bottom like a messenger, newest at the bottom.
+	// Only a single chat without a search can omit the chat name per message.
+	singleChat := req.chatID != 0 && req.query == ""
 	var msgs []store.Message
 	if req.around != 0 {
 		msgs, err = h.store.Context(ctx, req.chatID, req.around, _contextWindow, _contextWindow)
@@ -60,7 +60,7 @@ func (h *handler) index(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
-	p.Messages = messageViews(msgs, req, chronological)
+	p.Messages = messageViews(msgs, req, singleChat)
 
 	h.render(w, p)
 }
@@ -103,14 +103,10 @@ func (h *handler) listMessages(
 		newer.offset = max(req.offset-_pageSize, 0)
 		newerURL = newer.url()
 	}
-	if req.chatID != 0 && !searching {
-		slices.Reverse(msgs)
-		p.Top = pagerLink(olderURL, "← Более ранние")
-		p.Bottom = pagerLink(newerURL, "Более поздние →")
-	} else {
-		p.Top = pagerLink(newerURL, "← Более поздние")
-		p.Bottom = pagerLink(olderURL, "Более ранние →")
-	}
+	// ...and shown oldest first, so the latest message ends up at the bottom.
+	slices.Reverse(msgs)
+	p.Top = pagerLink(olderURL, "↑ Более ранние")
+	p.Bottom = pagerLink(newerURL, "Более поздние ↓")
 	if searching {
 		p.Title = "Поиск «" + req.query + "»"
 		p.Empty = "Ничего не найдено"

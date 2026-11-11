@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo), ships with FTS5
@@ -80,6 +81,26 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 `
 
+// _migrations upgrade a database created by an earlier version. Entry i moves
+// the schema from version i to i+1; the version is kept in PRAGMA
+// user_version. Never edit or reorder published entries, only append.
+var _migrations = []string{
+	// 1: forwarded messages and history imported from chat exports.
+	`ALTER TABLE messages ADD COLUMN forward_from TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE messages ADD COLUMN forward_from_username TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE messages ADD COLUMN forward_date INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE messages ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;`,
+	// 2: chat profile pictures. A row also records that a chat was checked
+	// and has no picture (data IS NULL), so it is not asked about again soon.
+	`CREATE TABLE chat_photos (
+	     chat_id      INTEGER PRIMARY KEY REFERENCES chats(id),
+	     unique_id    TEXT    NOT NULL DEFAULT '',
+	     content_type TEXT    NOT NULL DEFAULT '',
+	     data         BLOB,
+	     checked_at   INTEGER NOT NULL
+	 );`,
+}
+
 const (
 	// MaxLimit caps how many rows a single query may return.
 	MaxLimit = 500
@@ -126,12 +147,58 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 
 	// Message history is private: keep the file readable by the owner only.
 	// Best effort; the data directory itself is already 0700.
 	_ = os.Chmod(path, 0o600)
 
 	return &Store{db: db, path: path}, nil
+}
+
+// migrate applies the pending entries of _migrations. It holds a write lock
+// for the whole upgrade, so several processes opening the same database at
+// once (for example "bot" and "stdio") cannot apply a migration twice.
+func migrate(db *sql.DB) (err error) {
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+
+	var version int
+	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version > len(_migrations) {
+		return fmt.Errorf("database schema version %d is newer than this binary supports (%d)",
+			version, len(_migrations))
+	}
+	for i := version; i < len(_migrations); i++ {
+		if _, err := conn.ExecContext(ctx, _migrations[i]); err != nil {
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+	}
+	// PRAGMA does not accept bound parameters.
+	setVersion := "PRAGMA user_version = " + strconv.Itoa(len(_migrations))
+	if _, err := conn.ExecContext(ctx, setVersion); err != nil {
+		return fmt.Errorf("set schema version: %w", err)
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err
 }
 
 // Close releases the database.

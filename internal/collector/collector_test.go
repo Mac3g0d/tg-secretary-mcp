@@ -102,3 +102,69 @@ func TestHandle(t *testing.T) {
 		})
 	}
 }
+
+func TestForwardedMessageKeepsItsOrigin(t *testing.T) {
+	tests := []struct {
+		name         string
+		give         *telegram.MessageOrigin
+		wantFrom     string
+		wantUsername string
+		wantForward  bool
+	}{
+		{name: "not forwarded"},
+		{
+			name: "from a user",
+			give: &telegram.MessageOrigin{
+				Type: "user", Date: 1700000000,
+				SenderUser: &telegram.User{ID: 7, FirstName: "Иван", Username: "ivan"},
+			},
+			wantFrom: "Иван", wantUsername: "ivan", wantForward: true,
+		},
+		{
+			name:     "from a hidden user",
+			give:     &telegram.MessageOrigin{Type: "hidden_user", Date: 1700000000, SenderUserName: "Аноним"},
+			wantFrom: "Аноним", wantForward: true,
+		},
+		{
+			name: "from a channel",
+			give: &telegram.MessageOrigin{
+				Type: "channel", Date: 1700000000,
+				Chat: &telegram.Chat{ID: -1001, Type: "channel", Title: "Новости", Username: "news"},
+			},
+			wantFrom: "Новости", wantUsername: "news", wantForward: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			c, db := newTestCollector(t, nil)
+			err := c.handle(ctx, telegram.Update{Message: &telegram.Message{
+				MessageID:     1,
+				Date:          1700000500,
+				Chat:          telegram.Chat{ID: 5, Type: "private", FirstName: "Ann"},
+				From:          &telegram.User{ID: 5, FirstName: "Ann"},
+				Text:          "смотри",
+				ForwardOrigin: tt.give,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			msgs, err := db.Messages(ctx, store.Query{})
+			if err != nil || len(msgs) != 1 {
+				t.Fatalf("stored %d messages, %v", len(msgs), err)
+			}
+			m := msgs[0]
+			if m.Forwarded() != tt.wantForward || m.ForwardFrom != tt.wantFrom ||
+				m.ForwardFromUsername != tt.wantUsername {
+				t.Errorf("forward = %v from %q (@%s)", m.Forwarded(), m.ForwardFrom, m.ForwardFromUsername)
+			}
+			// The sender stays the person who forwarded it.
+			if m.SenderName != "Ann" {
+				t.Errorf("sender = %q, want the forwarding user", m.SenderName)
+			}
+			if tt.wantForward && m.ForwardDate.Unix() != 1700000000 {
+				t.Errorf("forward date = %v", m.ForwardDate)
+			}
+		})
+	}
+}

@@ -47,15 +47,40 @@ h1 { margin: 0; padding: 14px 12px; font-size: 17px; border-bottom: 1px solid va
 h1 a { color: inherit; }
 nav { overflow-y: auto; flex: 1; }
 .chat {
-  display: block;
-  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   color: inherit;
 }
+.chat-body { flex: 1; min-width: 0; display: block; }
+.avatar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  color: #fff;
+  font-weight: 600;
+  font-size: 17px;
+}
+/* Placeholder backgrounds; all keep white text readable in both themes. */
+.avatar-0 { background: #c0504d; }
+.avatar-1 { background: #b9770e; }
+.avatar-2 { background: #6b8e23; }
+.avatar-3 { background: #2e8b77; }
+.avatar-4 { background: #2e75b6; }
+.avatar-5 { background: #7b61c4; }
+.avatar-6 { background: #b0508f; }
+.avatar-all { background: var(--muted); }
 .chat:hover { background: var(--bg); text-decoration: none; }
 .chat.active { background: var(--bubble-out); }
 .chat-top { display: flex; justify-content: space-between; gap: 8px; }
-.chat-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-title { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-count { color: var(--muted); font-size: 12px; flex-shrink: 0; }
 .chat-preview {
   display: block;
@@ -66,10 +91,20 @@ nav { overflow-y: auto; flex: 1; }
   white-space: nowrap;
 }
 
-main { height: 100vh; padding: 0 16px 24px; overflow-y: auto; }
+main { display: flex; flex-direction: column; height: 100vh; min-width: 0; padding: 0 16px; }
+/* A column-reverse scroller starts at its end: the page opens on the newest
+   message and older ones are reached by scrolling up, without any script. */
+.scroll {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  overflow-y: auto;
+  padding-bottom: 16px;
+}
+/* Keeps a short conversation at the top instead of the bottom edge. */
+.thread { margin-bottom: auto; }
 .search {
-  position: sticky;
-  top: 0;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -115,12 +150,12 @@ h2 { margin: 4px 0 12px; font-size: 16px; }
 .msg header { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 13px; color: var(--muted); }
 .msg-sender { color: var(--accent); font-weight: 600; }
 .msg p { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.forward { margin-top: 2px; padding-left: 8px; border-left: 2px solid var(--accent); color: var(--muted); font-size: 13px; }
 .tag { font-size: 12px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; }
 mark { background: var(--mark); color: inherit; border-radius: 2px; }
 
 @media (max-width: 720px) {
-  html, body { height: auto; }
-  body { display: block; }
-  aside { height: auto; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--border); }
-  main { height: auto; overflow: visible; }
+  body { display: flex; flex-direction: column; height: 100dvh; }
+  aside { height: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--border); }
+  main { flex: 1; min-height: 0; height: auto; }
 }

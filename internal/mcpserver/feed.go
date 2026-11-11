@@ -52,6 +52,7 @@ func (t *tools) getNewMessages(
 	q := store.Query{
 		Ascending:    true,
 		IncomingOnly: !in.IncludeOutgoing,
+		LiveOnly:     true, // imported history is not news
 		Limit:        limit + 1,
 	}
 

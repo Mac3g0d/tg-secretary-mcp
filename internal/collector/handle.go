@@ -77,6 +77,13 @@ func (c *Collector) saveMessage(ctx context.Context, m *telegram.Message) error 
 	if m.ReplyToMessage != nil {
 		rec.ReplyToID = m.ReplyToMessage.MessageID
 	}
+	if o := m.ForwardOrigin; o != nil {
+		rec.ForwardFrom = o.Name()
+		rec.ForwardFromUsername = o.Username()
+		if o.Date != 0 {
+			rec.ForwardDate = time.Unix(o.Date, 0)
+		}
+	}
 	switch {
 	case m.SenderChat != nil: // channel posts and anonymous group admins
 		rec.SenderID = m.SenderChat.ID

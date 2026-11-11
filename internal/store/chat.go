@@ -26,6 +26,9 @@ type ChatSummary struct {
 	MessageCount int64
 	LastDate     time.Time
 	LastText     string
+	// PhotoID identifies the stored profile picture and changes whenever the
+	// picture does. It is empty when the chat has none.
+	PhotoID string
 }
 
 // UpsertChat inserts or refreshes a chat. An empty BusinessConnectionID keeps
@@ -61,7 +64,9 @@ func (s *Store) chats(
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT c.id, c.type, c.title, c.username, c.business_connection_id,
 		       (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.deleted_at = 0),
-		       COALESCE(l.date, 0), COALESCE(l.text, '')
+		       COALESCE(l.date, 0), COALESCE(l.text, ''),
+		       COALESCE((SELECT unique_id FROM chat_photos
+		                 WHERE chat_id = c.id AND data IS NOT NULL), '')
 		FROM chats c
 		LEFT JOIN messages l ON l.pk = (
 		    SELECT pk FROM messages WHERE chat_id = c.id AND deleted_at = 0 ORDER BY date DESC, pk DESC LIMIT 1)
@@ -80,7 +85,7 @@ func (s *Store) chats(
 			last int64
 		)
 		err := rows.Scan(&c.Chat.ID, &c.Chat.Type, &c.Chat.Title, &c.Chat.Username,
-			&c.Chat.BusinessConnectionID, &c.MessageCount, &last, &c.LastText)
+			&c.Chat.BusinessConnectionID, &c.MessageCount, &last, &c.LastText, &c.PhotoID)
 		if err != nil {
 			return nil, fmt.Errorf("scan chat: %w", err)
 		}

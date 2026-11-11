@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -53,10 +54,19 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	defer db.Close()
 
+	// Created up front so there is an obvious place to drop chat exports.
+	// Failure is not fatal: the import tool reports a missing directory.
+	if cfg.ImportDir != "" {
+		if err := os.MkdirAll(cfg.ImportDir, 0o700); err != nil {
+			opts.Log.Warn("create import directory", "dir", cfg.ImportDir, "error", err)
+		}
+	}
+
 	api := telegram.New(cfg.BotToken, cfg.APIURL)
 	mcpOpts := mcpserver.Options{
-		Store:   db,
-		Version: opts.Version,
+		Store:     db,
+		Version:   opts.Version,
+		ImportDir: cfg.ImportDir,
 	}
 	if cfg.AllowSend {
 		mcpOpts.Sender = api
@@ -73,6 +83,7 @@ func Run(ctx context.Context, opts Options) error {
 			Store:        db,
 			Log:          opts.Log,
 			AllowedChats: cfg.AllowedChats,
+			Avatars:      cfg.Avatars,
 		})
 		g.Go(func() error { return c.Run(ctx) })
 	}
@@ -124,7 +135,11 @@ func newHTTPServer(opts Options, db *store.Store, mcpSrv *mcp.Server) (*httpserv
 		AuthToken: cfg.AuthToken,
 		Log:       opts.Log,
 		MCP: mcp.NewStreamableHTTPHandler(
-			func(*http.Request) *mcp.Server { return mcpSrv }, nil),
+			func(*http.Request) *mcp.Server { return mcpSrv },
+			&mcp.StreamableHTTPOptions{
+				// The SDK default (4 MiB) is too small for an inline chat export.
+				MaxRequestBodyBytes: mcpserver.MaxRequestBodyBytes,
+			}),
 	}
 	if cfg.WebUI {
 		ui, err := web.NewHandler(db, opts.Log)

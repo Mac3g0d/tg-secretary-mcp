@@ -305,3 +305,58 @@ func TestTokenIsNotLeakedInErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestMessageOrigin(t *testing.T) {
+	tests := []struct {
+		name         string
+		give         string
+		wantName     string
+		wantUsername string
+	}{
+		{
+			name:         "user",
+			give:         `{"type":"user","date":1,"sender_user":{"id":1,"first_name":"Иван","last_name":"Петров","username":"ivan"}}`,
+			wantName:     "Иван Петров",
+			wantUsername: "ivan",
+		},
+		{
+			name:     "hidden user",
+			give:     `{"type":"hidden_user","date":1,"sender_user_name":"Скрытый Автор"}`,
+			wantName: "Скрытый Автор",
+		},
+		{
+			name:         "chat",
+			give:         `{"type":"chat","date":1,"sender_chat":{"id":-5,"type":"supergroup","title":"Группа","username":"grp"}}`,
+			wantName:     "Группа",
+			wantUsername: "grp",
+		},
+		{
+			name:         "channel",
+			give:         `{"type":"channel","date":1,"chat":{"id":-9,"type":"channel","title":"Новости","username":"news"},"message_id":7}`,
+			wantName:     "Новости",
+			wantUsername: "news",
+		},
+		{
+			name: "unknown type",
+			give: `{"type":"something_new","date":1}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var m Message
+			raw := `{"message_id":1,"date":2,"chat":{"id":1},"forward_origin":` + tt.give + `}`
+			if err := json.Unmarshal([]byte(raw), &m); err != nil {
+				t.Fatal(err)
+			}
+			if m.ForwardOrigin == nil {
+				t.Fatal("forward_origin was not parsed")
+			}
+			if got := m.ForwardOrigin.Name(); got != tt.wantName {
+				t.Errorf("Name() = %q, want %q", got, tt.wantName)
+			}
+			if got := m.ForwardOrigin.Username(); got != tt.wantUsername {
+				t.Errorf("Username() = %q, want %q", got, tt.wantUsername)
+			}
+		})
+	}
+}

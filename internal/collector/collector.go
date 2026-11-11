@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mac3g0d/tg-secretary-mcp/internal/store"
@@ -42,6 +43,11 @@ type Config struct {
 	AllowedChats map[int64]bool
 	// PollTimeout is the long-polling timeout. It defaults to 50 seconds.
 	PollTimeout time.Duration
+	// Avatars makes the collector download chat profile pictures.
+	Avatars bool
+	// AvatarInterval is how often chats without a recent picture lookup are
+	// searched for. It defaults to one minute.
+	AvatarInterval time.Duration
 }
 
 // Collector archives Bot API updates into the store.
@@ -51,6 +57,12 @@ type Collector struct {
 	log          *slog.Logger
 	allowedChats map[int64]bool
 	pollTimeout  time.Duration
+
+	avatars        bool
+	avatarInterval time.Duration
+	// avatarKick wakes the avatar fetcher early, so the picture of a chat
+	// that has just appeared does not wait for the next interval.
+	avatarKick chan struct{}
 
 	// botID is the bot's own user ID, known once Run has started.
 	botID int64
@@ -64,6 +76,13 @@ func New(cfg Config) *Collector {
 		log:          cfg.Log,
 		allowedChats: cfg.AllowedChats,
 		pollTimeout:  cfg.PollTimeout,
+
+		avatars:        cfg.Avatars,
+		avatarInterval: cfg.AvatarInterval,
+		avatarKick:     make(chan struct{}, 1),
+	}
+	if c.avatarInterval == 0 {
+		c.avatarInterval = _defaultAvatarInterval
 	}
 	if c.log == nil {
 		c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -86,6 +105,20 @@ func (c *Collector) Run(ctx context.Context) error {
 		return fmt.Errorf("save bot username: %w", err)
 	}
 	c.log.Info("bot started", "username", me.Username)
+
+	if c.avatars {
+		// The fetcher stops with this function, whatever the reason, and is
+		// waited for so it never outlives the store.
+		avatarCtx, stopAvatars := context.WithCancel(ctx)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.runAvatars(avatarCtx)
+		}()
+		defer wg.Wait()
+		defer stopAvatars()
+	}
 
 	saved, err := c.store.Meta(ctx, MetaOffset)
 	if err != nil {
@@ -141,6 +174,13 @@ func (c *Collector) handleBatch(ctx context.Context, updates []telegram.Update) 
 		}
 		offset = u.UpdateID + 1
 	}
+	// A batch may have brought a chat nobody has a picture for yet. The
+	// buffered channel makes this a no-op when a wake-up is already pending.
+	select {
+	case c.avatarKick <- struct{}{}:
+	default:
+	}
+
 	// The offset is persisted so a restart neither replays nor skips updates.
 	if err := c.store.SetMeta(ctx, MetaOffset, strconv.FormatInt(offset, 10)); err != nil {
 		c.log.Error("persist offset", "error", err)

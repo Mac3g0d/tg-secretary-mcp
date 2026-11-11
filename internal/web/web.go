@@ -54,6 +54,7 @@ func NewHandler(s *store.Store, log *slog.Logger) (http.Handler, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", h.index)
+	mux.HandleFunc("GET /avatar/{chat}", h.avatar)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	return securityHeaders(mux), nil
 }

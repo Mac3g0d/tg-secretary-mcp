@@ -9,7 +9,8 @@ import (
 )
 
 const _messageColumns = `m.pk, m.chat_id, c.title, m.id, m.date, m.sender_id, m.sender_name,
-	m.sender_username, m.text, m.media_type, m.reply_to_id, m.is_outgoing, m.edited_at, m.deleted_at`
+	m.sender_username, m.text, m.media_type, m.reply_to_id, m.is_outgoing, m.edited_at, m.deleted_at,
+	m.forward_from, m.forward_from_username, m.forward_date`
 
 // Message is a stored message. PK is the local insertion order, ID is the
 // Telegram message_id (unique only within a chat).
@@ -28,6 +29,18 @@ type Message struct {
 	Outgoing       bool
 	EditedAt       time.Time
 	DeletedAt      time.Time
+
+	// ForwardFrom is the display name of the original author when the
+	// message was forwarded; ForwardDate is when the original was sent.
+	// A forwarded message always has a non-zero ForwardDate.
+	ForwardFrom         string
+	ForwardFromUsername string
+	ForwardDate         time.Time
+}
+
+// Forwarded reports whether the message was forwarded from elsewhere.
+func (m Message) Forwarded() bool {
+	return !m.ForwardDate.IsZero() || m.ForwardFrom != ""
 }
 
 // Query filters stored messages. Zero values mean "no filter".
@@ -39,6 +52,8 @@ type Query struct {
 	AfterPK        int64
 	IncomingOnly   bool
 	IncludeDeleted bool
+	ForwardedOnly  bool // only messages forwarded from elsewhere
+	LiveOnly       bool // skip history loaded by ImportMessages
 	Limit          int
 	Offset         int  // rows to skip, for paging
 	Ascending      bool // oldest first; default is newest first
@@ -49,13 +64,15 @@ type Query struct {
 func (s *Store) SaveMessage(ctx context.Context, m Message) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO messages (chat_id, id, date, sender_id, sender_name, sender_username, text,
-		                      media_type, reply_to_id, is_outgoing, edited_at, saved_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                      media_type, reply_to_id, is_outgoing, edited_at, saved_at,
+		                      forward_from, forward_from_username, forward_date)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (chat_id, id) DO UPDATE SET
 		    text = excluded.text, media_type = excluded.media_type, edited_at = excluded.edited_at,
 		    sender_name = excluded.sender_name, sender_username = excluded.sender_username`,
 		m.ChatID, m.ID, m.Date.Unix(), m.SenderID, m.SenderName, m.SenderUsername, m.Text,
-		m.MediaType, m.ReplyToID, m.Outgoing, unixOrZero(m.EditedAt), time.Now().Unix())
+		m.MediaType, m.ReplyToID, m.Outgoing, unixOrZero(m.EditedAt), time.Now().Unix(),
+		m.ForwardFrom, m.ForwardFromUsername, unixOrZero(m.ForwardDate))
 	if err != nil {
 		return fmt.Errorf("save message %d in chat %d: %w", m.ID, m.ChatID, err)
 	}
@@ -130,6 +147,12 @@ func (s *Store) Messages(ctx context.Context, q Query) ([]Message, error) {
 	if q.IncomingOnly {
 		where = append(where, "m.is_outgoing = 0")
 	}
+	if q.LiveOnly {
+		where = append(where, "m.imported = 0")
+	}
+	if q.ForwardedOnly {
+		where = append(where, "(m.forward_date != 0 OR m.forward_from != '')")
+	}
 	if !q.IncludeDeleted {
 		where = append(where, "m.deleted_at = 0")
 	}
@@ -190,16 +213,18 @@ func (s *Store) queryMessages(
 	var out []Message
 	for rows.Next() {
 		var (
-			m                     Message
-			date, edited, deleted int64
+			m                                Message
+			date, edited, deleted, forwarded int64
 		)
 		err := rows.Scan(&m.PK, &m.ChatID, &m.ChatTitle, &m.ID, &date, &m.SenderID,
 			&m.SenderName, &m.SenderUsername, &m.Text, &m.MediaType, &m.ReplyToID,
-			&m.Outgoing, &edited, &deleted)
+			&m.Outgoing, &edited, &deleted,
+			&m.ForwardFrom, &m.ForwardFromUsername, &forwarded)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		m.Date, m.EditedAt, m.DeletedAt = timeOrZero(date), timeOrZero(edited), timeOrZero(deleted)
+		m.ForwardDate = timeOrZero(forwarded)
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {

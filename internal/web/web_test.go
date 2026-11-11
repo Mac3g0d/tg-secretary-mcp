@@ -126,9 +126,9 @@ func TestPages(t *testing.T) {
 			want: []string{"Договор подпишем завтра", "секрет"},
 		},
 		{
-			name: "search newest first",
+			name: "search is chronological too",
 			give: "/?q=" + q,
-			want: []string{"Договор подпишем завтра", "договор готов"},
+			want: []string{"договор готов", "Договор подпишем завтра"},
 		},
 		{
 			name: "search in chat",
@@ -138,7 +138,7 @@ func TestPages(t *testing.T) {
 		{
 			name: "search everywhere from chat",
 			give: "/?chat=1&everywhere=1&q=" + q,
-			want: []string{"Договор подпишем завтра", "договор готов"},
+			want: []string{"договор готов", "Договор подпишем завтра"},
 		},
 		{
 			name: "context",
@@ -216,7 +216,7 @@ func TestPaging(t *testing.T) {
 			wantCount: 50,
 			wantFirst: "флуд номер 71",
 			wantLast:  "флуд номер 120",
-			wantLinks: []string{`<a href="/?chat=3&amp;offset=50">← Более ранние</a>`},
+			wantLinks: []string{`<a href="/?chat=3&amp;offset=50">↑ Более ранние</a>`},
 			noLinks:   []string{"Более поздние"},
 		},
 		{
@@ -225,16 +225,28 @@ func TestPaging(t *testing.T) {
 			wantCount: 20,
 			wantFirst: "флуд номер 1",
 			wantLast:  "флуд номер 20",
-			wantLinks: []string{`<a href="/?chat=3&amp;offset=50">Более поздние →</a>`},
+			wantLinks: []string{`<a href="/?chat=3&amp;offset=50">Более поздние ↓</a>`},
 			noLinks:   []string{"Более ранние"},
 		},
 		{
-			name:      "feed: newest first, older via bottom link",
+			name:      "feed: newest at the bottom, older via top link",
 			give:      "/",
 			wantCount: 50,
-			wantFirst: "флуд номер 120",
-			wantLast:  "флуд номер 71",
-			wantLinks: []string{`<a href="/?offset=50">Более ранние →</a>`},
+			wantFirst: "флуд номер 71",
+			wantLast:  "флуд номер 120",
+			wantLinks: []string{`<a href="/?offset=50">↑ Более ранние</a>`},
+			noLinks:   []string{"Более поздние"},
+		},
+		{
+			name:      "feed: second page links both ways",
+			give:      "/?offset=50",
+			wantCount: 50,
+			wantFirst: "флуд номер 21",
+			wantLast:  "флуд номер 70",
+			wantLinks: []string{
+				`<a href="/?offset=100">↑ Более ранние</a>`,
+				`<a href="/">Более поздние ↓</a>`,
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -400,5 +412,145 @@ func TestRequestURL(t *testing.T) {
 				t.Errorf("url() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestForwardLabel(t *testing.T) {
+	date := time.Date(2026, 1, 2, 15, 4, 0, 0, time.Local)
+	tests := []struct {
+		name string
+		give store.Message
+		want string
+	}{
+		{
+			name: "name and date",
+			give: store.Message{ForwardFrom: "Иван", ForwardDate: date},
+			want: "переслано от Иван, 02.01.2026 15:04",
+		},
+		{
+			name: "username only",
+			give: store.Message{ForwardFromUsername: "news", ForwardDate: date},
+			want: "переслано от @news, 02.01.2026 15:04",
+		},
+		{
+			name: "no origin name",
+			give: store.Message{ForwardDate: date},
+			want: "переслано, 02.01.2026 15:04",
+		},
+		{
+			name: "no date",
+			give: store.Message{ForwardFrom: "Иван"},
+			want: "переслано от Иван",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := forwardLabel(tt.give); got != tt.want {
+				t.Errorf("forwardLabel() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestForwardedMessageIsMarked(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := db.UpsertChat(ctx, store.Chat{ID: 1, Title: "Чат"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []store.Message{
+		{ChatID: 1, ID: 1, Date: time.Now(), Text: "своё"},
+		{ChatID: 1, ID: 2, Date: time.Now(), Text: "чужое",
+			ForwardFrom: "<b>Иван</b>", ForwardDate: time.Now()},
+	} {
+		if err := db.SaveMessage(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, err := NewHandler(db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	body, _ := get(t, ts, "/?chat=1", http.StatusOK)
+	if got := strings.Count(body, `class="forward"`); got != 1 {
+		t.Errorf("%d forward labels, want 1", got)
+	}
+	if !strings.Contains(body, "переслано от &lt;b&gt;Иван&lt;/b&gt;") {
+		t.Error("forward origin is missing or not escaped")
+	}
+}
+
+func TestAvatars(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	for _, c := range []store.Chat{{ID: 1, Title: "анна"}, {ID: -100200, Title: "«Проект»"}} {
+		if err := db.UpsertChat(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	picture := []byte("\x89PNG\r\n\x1a\n-fake-")
+	err = db.SavePhoto(ctx, 1, store.Photo{UniqueID: "v 1", ContentType: "image/png", Data: picture})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	page, _ := get(t, ts, "/", http.StatusOK)
+	if !strings.Contains(page, `<img class="avatar" src="/avatar/1?v=v&#43;1"`) {
+		t.Errorf("chat with a picture should show it:\n%s", page)
+	}
+	// No picture: the first letter of the title, skipping punctuation.
+	if !strings.Contains(page, `aria-hidden="true">П</span>`) {
+		t.Error("chat without a picture should show its initial")
+	}
+
+	body, header := get(t, ts, "/avatar/1?v=anything", http.StatusOK)
+	if body != string(picture) || header.Get("Content-Type") != "image/png" {
+		t.Errorf("avatar response: %q, %s", body, header.Get("Content-Type"))
+	}
+	if cc := header.Get("Cache-Control"); !strings.Contains(cc, "private") || !strings.Contains(cc, "immutable") {
+		t.Errorf("Cache-Control = %q", cc)
+	}
+	if header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("avatar responses must not be sniffed")
+	}
+
+	for _, path := range []string{"/avatar/-100200", "/avatar/999", "/avatar/abc", "/avatar/"} {
+		get(t, ts, path, http.StatusNotFound)
+	}
+}
+
+func TestInitial(t *testing.T) {
+	tests := []struct {
+		give string
+		want string
+	}{
+		{give: "анна", want: "А"},
+		{give: "«Проект» 2", want: "П"},
+		{give: "42-й чат", want: "4"},
+		{give: "🙂 smile", want: "S"},
+		{give: "…", want: "#"},
+		{give: "", want: "#"},
+	}
+	for _, tt := range tests {
+		if got := initial(tt.give); got != tt.want {
+			t.Errorf("initial(%q) = %q, want %q", tt.give, got, tt.want)
+		}
 	}
 }
