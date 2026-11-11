@@ -8,19 +8,22 @@ import (
 
 // Message is the tool-facing representation of a stored message.
 type Message struct {
-	ChatID         int64  `json:"chat_id"`
-	Chat           string `json:"chat"`
-	MessageID      int64  `json:"message_id"`
-	Date           string `json:"date" jsonschema:"RFC 3339 timestamp"`
-	Sender         string `json:"sender,omitempty"`
-	SenderUsername string `json:"sender_username,omitempty"`
-	SenderID       int64  `json:"sender_id,omitempty"`
-	Text           string `json:"text"`
-	Media          string `json:"media,omitempty" jsonschema:"attachment kind such as photo or voice; attachments themselves are not stored"`
-	ReplyToID      int64  `json:"reply_to_message_id,omitempty"`
-	Outgoing       bool   `json:"outgoing,omitempty" jsonschema:"true if written by the bot or the account owner"`
-	Edited         bool   `json:"edited,omitempty"`
-	Deleted        bool   `json:"deleted,omitempty"`
+	ChatID                int64  `json:"chat_id"`
+	Chat                  string `json:"chat"`
+	MessageID             int64  `json:"message_id"`
+	Date                  string `json:"date" jsonschema:"RFC 3339 timestamp"`
+	Sender                string `json:"sender,omitempty"`
+	SenderUsername        string `json:"sender_username,omitempty"`
+	SenderID              int64  `json:"sender_id,omitempty"`
+	Text                  string `json:"text"`
+	Media                 string `json:"media,omitempty" jsonschema:"attachment kind such as photo or voice; attachments themselves are not stored"`
+	ReplyToID             int64  `json:"reply_to_message_id,omitempty"`
+	ForwardedFrom         string `json:"forwarded_from,omitempty" jsonschema:"set when the message is a forward: display name of the original author, who is not the sender"`
+	ForwardedFromUsername string `json:"forwarded_from_username,omitempty"`
+	ForwardDate           string `json:"forward_date,omitempty" jsonschema:"RFC 3339 time the original message was sent, set for forwarded messages"`
+	Outgoing              bool   `json:"outgoing,omitempty" jsonschema:"true if written by the bot or the account owner"`
+	Edited                bool   `json:"edited,omitempty"`
+	Deleted               bool   `json:"deleted,omitempty"`
 }
 
 // MessagesOutput is the result of the message-returning tools.
@@ -35,22 +38,35 @@ func convert(msgs []store.Message) []Message {
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, Message{
-			ChatID:         m.ChatID,
-			Chat:           m.ChatTitle,
-			MessageID:      m.ID,
-			Date:           formatTime(m.Date),
-			Sender:         m.SenderName,
-			SenderUsername: m.SenderUsername,
-			SenderID:       m.SenderID,
-			Text:           m.Text,
-			Media:          m.MediaType,
-			ReplyToID:      m.ReplyToID,
-			Outgoing:       m.Outgoing,
-			Edited:         !m.EditedAt.IsZero(),
-			Deleted:        !m.DeletedAt.IsZero(),
+			ChatID:                m.ChatID,
+			Chat:                  m.ChatTitle,
+			MessageID:             m.ID,
+			Date:                  formatTime(m.Date),
+			Sender:                m.SenderName,
+			SenderUsername:        m.SenderUsername,
+			SenderID:              m.SenderID,
+			Text:                  m.Text,
+			Media:                 m.MediaType,
+			ReplyToID:             m.ReplyToID,
+			ForwardedFrom:         forwardedFrom(m),
+			ForwardedFromUsername: m.ForwardFromUsername,
+			ForwardDate:           formatTime(m.ForwardDate),
+			Outgoing:              m.Outgoing,
+			Edited:                !m.EditedAt.IsZero(),
+			Deleted:               !m.DeletedAt.IsZero(),
 		})
 	}
 	return out
+}
+
+// forwardedFrom names the original author of a forwarded message. A forward
+// whose origin has no name still gets a marker, so the field alone tells
+// agents that the sender did not write the text.
+func forwardedFrom(m store.Message) string {
+	if m.ForwardFrom == "" && m.Forwarded() {
+		return "unknown"
+	}
+	return m.ForwardFrom
 }
 
 // newMessagesOutput converts msgs and reports whether more rows were fetched

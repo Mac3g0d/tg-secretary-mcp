@@ -56,6 +56,7 @@ type messageView struct {
 	Date       string
 	DateISO    string
 	Media      string
+	Forwarded  string // "переслано от …" label, empty for ordinary messages
 	Segments   []segment
 	ContextURL string
 	Outgoing   bool
@@ -88,16 +89,16 @@ func chatViews(chats []store.ChatSummary, active int64) (views []chatView, activ
 	return views, activeTitle
 }
 
-// messageViews renders msgs for req. chronological tells whether the list is a
-// single chat read top to bottom, in which case each message omits its chat.
-func messageViews(msgs []store.Message, req request, chronological bool) []messageView {
+// messageViews renders msgs for req. singleChat tells whether the list is one
+// chat without a search, in which case each message omits its chat name.
+func messageViews(msgs []store.Message, req request, singleChat bool) []messageView {
 	terms := strings.Fields(strings.ToLower(req.query))
 	views := make([]messageView, 0, len(msgs))
 	for _, m := range msgs {
 		v := messageView{
 			Sender:   m.SenderName,
 			Chat:     m.ChatTitle,
-			ShowChat: !chronological && req.around == 0,
+			ShowChat: !singleChat && req.around == 0,
 			Date:     m.Date.Format(_dateLayout),
 			DateISO:  m.Date.Format(time.RFC3339),
 			Media:    m.MediaType,
@@ -109,6 +110,9 @@ func messageViews(msgs []store.Message, req request, chronological bool) []messa
 		}
 		if v.Sender == "" {
 			v.Sender = m.SenderUsername
+		}
+		if m.Forwarded() {
+			v.Forwarded = forwardLabel(m)
 		}
 		if v.ShowChat {
 			v.ContextURL = request{
@@ -128,4 +132,20 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// forwardLabel describes the origin of a forwarded message.
+func forwardLabel(m store.Message) string {
+	from := m.ForwardFrom
+	if from == "" && m.ForwardFromUsername != "" {
+		from = "@" + m.ForwardFromUsername
+	}
+	label := "переслано"
+	if from != "" {
+		label += " от " + from
+	}
+	if !m.ForwardDate.IsZero() {
+		label += ", " + m.ForwardDate.Format(_dateLayout)
+	}
+	return label
 }

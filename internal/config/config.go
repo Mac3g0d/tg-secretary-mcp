@@ -12,6 +12,8 @@ import (
 const (
 	_defaultDBPath = "data/secretary.db"
 	_defaultAddr   = "127.0.0.1:8080"
+	_defaultImport = "data/import"
+	_importOff     = "off"
 	_dotEnvPath    = ".env"
 )
 
@@ -33,6 +35,9 @@ type Config struct {
 	AuthToken string
 	// WebUI is WEB_UI (default true): serve the browser UI next to /mcp.
 	WebUI bool
+	// ImportDir is TG_IMPORT_DIR: the directory agents may import chat
+	// exports from. It is empty when the variable is "off".
+	ImportDir string
 }
 
 // Load reads the configuration. Variables already present in the environment
@@ -55,7 +60,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("TG_ALLOWED_CHATS: %w", err)
 	}
 
+	importDir := envString("TG_IMPORT_DIR", _defaultImport)
+	if importDir == _importOff {
+		importDir = ""
+	}
+
 	return &Config{
+		ImportDir:    importDir,
 		BotToken:     os.Getenv("TELEGRAM_BOT_TOKEN"),
 		APIURL:       os.Getenv("TELEGRAM_API_URL"),
 		DBPath:       envString("TG_DB_PATH", _defaultDBPath),

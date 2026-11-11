@@ -26,6 +26,7 @@ type getMessagesInput struct {
 	Until          string `json:"until,omitempty" jsonschema:"only messages at or before this time, same formats as since"`
 	Sender         string `json:"sender,omitempty" jsonschema:"only messages from this sender: @username or part of the name"`
 	IncludeDeleted bool   `json:"include_deleted,omitempty" jsonschema:"also return messages known to be deleted"`
+	ForwardedOnly  bool   `json:"forwarded_only,omitempty" jsonschema:"only messages forwarded from elsewhere"`
 }
 
 type searchInput struct {
@@ -36,6 +37,7 @@ type searchInput struct {
 	Until          string `json:"until,omitempty" jsonschema:"only messages at or before this time, same formats as since"`
 	Limit          int    `json:"limit,omitempty" jsonschema:"maximum number of messages (default 50, max 500)"`
 	IncludeDeleted bool   `json:"include_deleted,omitempty" jsonschema:"also return messages known to be deleted"`
+	ForwardedOnly  bool   `json:"forwarded_only,omitempty" jsonschema:"only messages forwarded from elsewhere"`
 }
 
 type contextInput struct {
@@ -87,6 +89,7 @@ func (t *tools) getMessages(
 		ChatID:         &chat.ID,
 		Sender:         in.Sender,
 		IncludeDeleted: in.IncludeDeleted,
+		ForwardedOnly:  in.ForwardedOnly,
 	}
 	out, err := t.query(ctx, q, in.Since, in.Until, in.Limit)
 	if err != nil {
@@ -111,6 +114,7 @@ func (t *tools) searchMessages(
 		Text:           in.Query,
 		Sender:         in.Sender,
 		IncludeDeleted: in.IncludeDeleted,
+		ForwardedOnly:  in.ForwardedOnly,
 	}
 	if in.Chat != "" {
 		chat, err := t.store.ResolveChat(ctx, in.Chat)

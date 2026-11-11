@@ -43,19 +43,67 @@ func (c *Chat) DisplayName() string {
 	return c.Username
 }
 
+// MessageOrigin describes where a forwarded message originally came from.
+// Type is one of "user", "hidden_user", "chat" or "channel" and decides which
+// of the other fields are set.
+type MessageOrigin struct {
+	Type string `json:"type"`
+	// Date is when the original message was sent (Unix time).
+	Date int64 `json:"date"`
+	// SenderUser is set for type "user".
+	SenderUser *User `json:"sender_user"`
+	// SenderUserName is set for type "hidden_user": the author hides their
+	// account, so only a display name is available.
+	SenderUserName string `json:"sender_user_name"`
+	// SenderChat is set for type "chat" (a message sent on behalf of a chat).
+	SenderChat *Chat `json:"sender_chat"`
+	// Chat is set for type "channel".
+	Chat *Chat `json:"chat"`
+}
+
+// Name returns the display name of the original author.
+func (o *MessageOrigin) Name() string {
+	switch {
+	case o.SenderUser != nil:
+		return o.SenderUser.DisplayName()
+	case o.SenderChat != nil:
+		return o.SenderChat.DisplayName()
+	case o.Chat != nil:
+		return o.Chat.DisplayName()
+	default:
+		return o.SenderUserName
+	}
+}
+
+// Username returns the @username of the original author without the "@",
+// or "" when the origin has none (for example a hidden user).
+func (o *MessageOrigin) Username() string {
+	switch {
+	case o.SenderUser != nil:
+		return o.SenderUser.Username
+	case o.SenderChat != nil:
+		return o.SenderChat.Username
+	case o.Chat != nil:
+		return o.Chat.Username
+	default:
+		return ""
+	}
+}
+
 // Message is the subset of the Bot API Message object the secretary stores.
 // Media payloads are kept raw: only their presence matters.
 type Message struct {
-	MessageID            int64    `json:"message_id"`
-	Date                 int64    `json:"date"`
-	EditDate             int64    `json:"edit_date"`
-	Chat                 Chat     `json:"chat"`
-	From                 *User    `json:"from"`
-	SenderChat           *Chat    `json:"sender_chat"`
-	BusinessConnectionID string   `json:"business_connection_id"`
-	Text                 string   `json:"text"`
-	Caption              string   `json:"caption"`
-	ReplyToMessage       *Message `json:"reply_to_message"`
+	MessageID            int64          `json:"message_id"`
+	Date                 int64          `json:"date"`
+	EditDate             int64          `json:"edit_date"`
+	Chat                 Chat           `json:"chat"`
+	From                 *User          `json:"from"`
+	SenderChat           *Chat          `json:"sender_chat"`
+	BusinessConnectionID string         `json:"business_connection_id"`
+	Text                 string         `json:"text"`
+	Caption              string         `json:"caption"`
+	ReplyToMessage       *Message       `json:"reply_to_message"`
+	ForwardOrigin        *MessageOrigin `json:"forward_origin"`
 
 	Photo     json.RawMessage `json:"photo"`
 	Video     json.RawMessage `json:"video"`
